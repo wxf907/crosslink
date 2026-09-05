@@ -130,7 +130,14 @@ function Assert-ApkIntegrity {
 
 # 串行化：禁止并发构建（并发共用 build/ 中间目录是丢件的成因之一）
 $mutex = New-Object System.Threading.Mutex($false, 'CrossLink_Release_Mutex')
-if (-not $mutex.WaitOne(0)) {
+$owned = $false
+try {
+  $owned = $mutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+  # 上次构建进程被强杀未释放锁：此时所有权已转移到本进程，可继续
+  $owned = $true
+}
+if (-not $owned) {
   Fail '已有另一个构建在进行中，请等它结束后再运行（构建必须串行）。'
 }
 
