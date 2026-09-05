@@ -75,6 +75,59 @@ function Stop-App {
   }
 }
 
+# APK 完整性门禁：架构唯一、原生库逐个比对、资源清单、版本号、敏感权限、体积区间。
+# 必须对"最终要交付的那个文件"跑一遍，而不是只校验构建中间产物。
+function Assert-ApkIntegrity {
+  param([string]$ApkPath)
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $zip = [IO.Compression.ZipFile]::OpenRead($ApkPath)
+  $entries = $zip.Entries | ForEach-Object { $_.FullName }
+  $zip.Dispose()
+
+  $abis = @($entries | Where-Object { $_ -like 'lib/*' } | ForEach-Object { ($_ -split '/')[1] } | Select-Object -Unique)
+  if ($abis.Count -ne 1 -or $abis[0] -ne 'arm64-v8a') {
+    Fail "APK 架构异常：$($abis -join ', ')（应只有 arm64-v8a）"
+  }
+  $libs = @($entries | Where-Object { $_ -like 'lib/arm64-v8a/*.so' } | ForEach-Object { Split-Path $_ -Leaf })
+  $missLibs = @($RequiredLibs | Where-Object { $libs -notcontains $_ })
+  if ($missLibs.Count -gt 0) { Fail "缺少原生库：$($missLibs -join ', ')" }
+  Ok "原生库 $($libs.Count)/$($RequiredLibs.Count) 齐全"
+
+  $assets = @($entries | Where-Object { $_ -like 'assets/flutter_assets/*' })
+  $missAssets = @($RequiredAssets | Where-Object { $a = 'assets/flutter_assets/' + $_; -not ($assets -contains $a) })
+  if ($missAssets.Count -gt 0) { Fail "缺少资源文件：$($missAssets -join ', ')" }
+  $shaders = @($assets | Where-Object { $_ -like '*/shaders/*' })
+  if ($shaders.Count -eq 0) { Fail '缺少编译着色器（shaders 为空）' }
+  Ok "资源包 $($assets.Count) 项、着色器 $($shaders.Count) 项齐全"
+
+  $badging = & $Aapt2 dump badging $ApkPath 2>$null | Out-String
+  $mVer = [regex]::Match($badging, "versionCode='(\d+)' versionName='([^']*)'")
+  if (-not $mVer.Success) { Fail '无法读取 APK 版本号' }
+  # 注意：--split-per-abi 时 Flutter 会给各架构自动加 versionCode 偏移
+  # （armeabi-v7a +1000、arm64-v8a +2000、x86_64 +4000），
+  # 所以 arm64 包的 code = pubspec 基准值 + 2000，属正常行为而非配置错误。
+  $expectedApkCode = $VerCode + 2000
+  if ([int]$mVer.Groups[1].Value -ne $expectedApkCode) {
+    Fail "APK versionCode=$($mVer.Groups[1].Value)，应为 $expectedApkCode（基准 $VerCode + arm64 偏移 2000）"
+  }
+  if ([int]$mVer.Groups[1].Value -le $MinVersionCode) {
+    Fail "APK versionCode $($mVer.Groups[1].Value) 不大于线上最高 $MinVersionCode，无法覆盖安装"
+  }
+  if ($mVer.Groups[2].Value -ne $VerName) {
+    Fail "APK versionName=$($mVer.Groups[2].Value) 与 pubspec $VerName 不符"
+  }
+  if ($badging -match 'MANAGE_EXTERNAL_STORAGE') {
+    Fail 'APK 仍声明 MANAGE_EXTERNAL_STORAGE（该权限会导致升级重置用户权限，应已移除）'
+  }
+  Ok "APK 版本 $($mVer.Groups[2].Value) / code $($mVer.Groups[1].Value)，无敏感存储权限"
+
+  $apkMb = (Get-Item $ApkPath).Length / 1MB
+  if ($apkMb -lt 20 -or $apkMb -gt 32) {
+    Fail "APK 体积 $([math]::Round($apkMb,1)) MB 超出合理区间 20~32MB（可能丢件或混入多余内容）"
+  }
+  Ok "APK $([math]::Round($apkMb,1)) MB"
+}
+
 # 串行化：禁止并发构建（并发共用 build/ 中间目录是丢件的成因之一）
 $mutex = New-Object System.Threading.Mutex($false, 'CrossLink_Release_Mutex')
 if (-not $mutex.WaitOne(0)) {
@@ -148,53 +201,7 @@ try {
 
   # ---------- 5. APK 完整性门禁 ----------
   Step 'APK 完整性门禁'
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $zip = [IO.Compression.ZipFile]::OpenRead($Apk)
-  $entries = $zip.Entries | ForEach-Object { $_.FullName }
-  $zip.Dispose()
-
-  $abis = @($entries | Where-Object { $_ -like 'lib/*' } | ForEach-Object { ($_ -split '/')[1] } | Select-Object -Unique)
-  if ($abis.Count -ne 1 -or $abis[0] -ne 'arm64-v8a') {
-    Fail "APK 架构异常：$($abis -join ', ')（应只有 arm64-v8a）"
-  }
-  $libs = @($entries | Where-Object { $_ -like 'lib/arm64-v8a/*.so' } | ForEach-Object { Split-Path $_ -Leaf })
-  $missLibs = @($RequiredLibs | Where-Object { $libs -notcontains $_ })
-  if ($missLibs.Count -gt 0) { Fail "缺少原生库：$($missLibs -join ', ')" }
-  Ok "原生库 $($libs.Count)/$($RequiredLibs.Count) 齐全"
-
-  $assets = @($entries | Where-Object { $_ -like 'assets/flutter_assets/*' })
-  $missAssets = @($RequiredAssets | Where-Object { $a = 'assets/flutter_assets/' + $_; -not ($assets -contains $a) })
-  if ($missAssets.Count -gt 0) { Fail "缺少资源文件：$($missAssets -join ', ')" }
-  $shaders = @($assets | Where-Object { $_ -like '*/shaders/*' })
-  if ($shaders.Count -eq 0) { Fail '缺少编译着色器（shaders 为空）' }
-  Ok "资源包 $($assets.Count) 项、着色器 $($shaders.Count) 项齐全"
-
-  $badging = & $Aapt2 dump badging $Apk 2>$null | Out-String
-  $mVer = [regex]::Match($badging, "versionCode='(\d+)' versionName='([^']*)'")
-  if (-not $mVer.Success) { Fail '无法读取 APK 版本号' }
-  # 注意：--split-per-abi 时 Flutter 会给各架构自动加 versionCode 偏移
-  # （armeabi-v7a +1000、arm64-v8a +2000、x86_64 +4000），
-  # 所以 arm64 包的 code = pubspec 基准值 + 2000，属正常行为而非配置错误。
-  $expectedApkCode = $VerCode + 2000
-  if ([int]$mVer.Groups[1].Value -ne $expectedApkCode) {
-    Fail "APK versionCode=$($mVer.Groups[1].Value)，应为 $expectedApkCode（基准 $VerCode + arm64 偏移 2000）"
-  }
-  if ([int]$mVer.Groups[1].Value -le $MinVersionCode) {
-    Fail "APK versionCode $($mVer.Groups[1].Value) 不大于线上最高 $MinVersionCode，无法覆盖安装"
-  }
-  if ($mVer.Groups[2].Value -ne $VerName) {
-    Fail "APK versionName=$($mVer.Groups[2].Value) 与 pubspec $VerName 不符"
-  }
-  if ($badging -match 'MANAGE_EXTERNAL_STORAGE') {
-    Fail 'APK 仍声明 MANAGE_EXTERNAL_STORAGE（该权限会导致升级重置用户权限，应已移除）'
-  }
-  Ok "APK 版本 $($mVer.Groups[2].Value) / code $($mVer.Groups[1].Value)，无敏感存储权限"
-
-  $apkMb = (Get-Item $Apk).Length / 1MB
-  if ($apkMb -lt 20 -or $apkMb -gt 32) {
-    Fail "APK 体积 $([math]::Round($apkMb,1)) MB 超出合理区间 20~32MB（可能丢件或混入多余内容）"
-  }
-  Ok "APK $([math]::Round($apkMb,1)) MB"
+  Assert-ApkIntegrity $Apk
 
   # ---------- 6. 交付 ----------
   Step '复制到交付产物'
@@ -202,6 +209,15 @@ try {
   Copy-Item -LiteralPath $Setup -Destination (Join-Path $Delivery "CrossLink-Setup-$VerName.exe") -Force
   Copy-Item -LiteralPath $Apk   -Destination (Join-Path $Delivery "CrossLink-$VerName.apk")   -Force
   Ok "CrossLink-Setup-$VerName.exe / CrossLink-$VerName.apk"
+
+  # ---------- 7. 交付后复检（校验对象 = 交付目录里的最终文件） ----------
+  Step '交付后复检'
+  $DelApk = Join-Path $Delivery "CrossLink-$VerName.apk"
+  $DelSetup = Join-Path $Delivery "CrossLink-Setup-$VerName.exe"
+  if ((Get-Item $DelApk).Length -ne (Get-Item $Apk).Length) { Fail '交付 APK 与构建产物大小不一致（复制损坏？）' }
+  if ((Get-Item $DelSetup).Length -ne (Get-Item $Setup).Length) { Fail '交付安装包与构建产物大小不一致（复制损坏？）' }
+  Assert-ApkIntegrity $DelApk
+  Ok '交付文件复检通过'
 
   Write-Host ''
   Write-Host "===== 发布成功：$VerName (versionCode $VerCode) =====" -ForegroundColor Green
