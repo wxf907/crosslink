@@ -19,7 +19,7 @@
 
 ## 下载安装
 
-前往 [Releases](../../releases) 下载对应平台的最新文件：
+前往 [Releases](https://github.com/wxf907/crosslink/releases) 下载对应平台的最新文件：
 
 | 平台 | 文件 | 说明 |
 |------|------|------|
