@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 公共外部存储根目录（/storage/emulated/0）下的子目录 -->
+    <external-path name="external_storage" path="." />
+    <!-- 应用专属外部存储（用于回退场景） -->
+    <external-files-path name="external_files" path="." />
+</paths>

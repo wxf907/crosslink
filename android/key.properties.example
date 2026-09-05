@@ -1,0 +1,11 @@
+# 复制此文件为 key.properties 并填入你的签名信息
+# key.properties 已被 .gitignore 排除，不会提交到仓库
+#
+# 生成签名密钥：
+#   keytool -genkey -v -keystore crosslink-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias crosslink
+#
+# 填入以下信息后即可构建正式签名 APK：
+storeFile=your-release.jks
+storePassword=your-store-password
+keyAlias=your-key-alias
+keyPassword=your-key-password
