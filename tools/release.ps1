@@ -27,6 +27,12 @@ $Aapt2     = 'D:\dev\android\build-tools\36.0.0\aapt2.exe'
 $Keystore  = 'D:\crosslink_keystore\crosslink-release.jks'
 $KeyProps  = Join-Path $SrcRoot 'android\key.properties'
 
+# 好友二维码：仓库里只有占位图（真实码进 git 历史即永久公开），
+# 正式构建前从项目外注入真图，构建结束在 finally 里还原，防误提交。
+$QrRealSrc  = 'D:\crosslink_keystore\assets_private\wechat_contact_qr.png'
+$QrInRepo   = Join-Path $SrcRoot 'assets\images\wechat_contact_qr.png'
+$script:qrInjected = $false
+
 # ---- 上一版已发布的最大 versionCode（防止编号倒退导致无法覆盖安装）----
 $MinVersionCode = 32100
 
@@ -183,6 +189,16 @@ try {
   if ((Run-Tool $Flutter @('test', '--no-pub') -Tail 3) -ne 0) { Fail '单元测试未通过' }
   Ok '测试全绿'
 
+  # ---------- 2.5 注入真实好友二维码（产物用，不入库） ----------
+  Step '注入真实好友二维码'
+  if (Test-Path $QrRealSrc) {
+    Copy-Item -LiteralPath $QrRealSrc -Destination $QrInRepo -Force
+    $script:qrInjected = $true
+    Ok '已注入（构建结束后自动还原为占位图）'
+  } else {
+    Write-Host '    WARN 未找到项目外真实码，产物联系页将显示占位图' -ForegroundColor Yellow
+  }
+
   # ---------- 3. 构建 Windows ----------
   Step '构建 Windows EXE'
   Stop-App
@@ -231,6 +247,10 @@ try {
   Write-Host "交付目录：$Delivery"
 }
 finally {
-  $mutex.ReleaseMutex()
+  if ($script:qrInjected) {
+    git -C $SrcRoot checkout -- assets/images/wechat_contact_qr.png 2>$null
+    Write-Host '    已还原二维码占位图（真实码不入库）' -ForegroundColor Yellow
+  }
+  if ($owned) { $mutex.ReleaseMutex() }
   $mutex.Dispose()
 }
