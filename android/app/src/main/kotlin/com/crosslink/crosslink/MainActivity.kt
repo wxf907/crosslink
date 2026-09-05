@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.provider.Settings
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -44,6 +45,18 @@ class MainActivity : FlutterActivity() {
                             } else {
                                 result.error("no_app", "No file manager app found", null)
                             }
+                        } catch (e: Exception) {
+                            result.error("error", e.message, null)
+                        }
+                    }
+                    "androidId" -> {
+                        // ANDROID_ID：同一设备 + 同一签名密钥下，卸载重装保持不变，
+                        // 用于派生稳定设备标识（避免重装后被识别成新设备）
+                        try {
+                            val id = Settings.Secure.getString(
+                                contentResolver, Settings.Secure.ANDROID_ID
+                            )
+                            result.success(id)
                         } catch (e: Exception) {
                             result.error("error", e.message, null)
                         }
