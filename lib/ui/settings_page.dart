@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:provider/provider.dart';
 
 import '../core/constants.dart';
@@ -179,7 +180,23 @@ class SettingsPage extends StatelessWidget {
           ),
 
           const _SectionTitle('其他'),
-          ListTile(
+          if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) ...[
+            ListTile(
+              leading: const Icon(Icons.pin_end_outlined),
+              title: const Text('关闭主窗口时'),
+              subtitle: Text(_closeBehaviorLabel(app)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _pickCloseBehavior(context, app),
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.rocket_launch_outlined),
+              title: const Text('开机自动启动'),
+              subtitle: const Text('登录后自动在托盘运行，其他设备随时可连入'),
+              value: app.settings.autoStart,
+              onChanged: (v) => _setAutoStart(context, app, v),
+            ),
+          ],
+            ListTile(
             leading: const Icon(Icons.favorite_outline, color: Colors.pink),
             title: const Text('联系 / 支持作者'),
             subtitle: const Text('加作者微信，或请作者喝杯咖啡'),
@@ -196,7 +213,7 @@ class SettingsPage extends StatelessWidget {
           const Center(
             child: Padding(
               padding: EdgeInsets.all(12),
-              child: Text('CrossLink v2.2.2',
+              child: Text('CrossLink v2.2.3',
                   style: TextStyle(color: Colors.black38, fontSize: 12)),
             ),
           ),
@@ -227,6 +244,60 @@ class SettingsPage extends StatelessWidget {
     );
     if (name != null && name.trim().isNotEmpty) {
       await app.setDeviceName(name);
+    }
+  }
+
+  String _closeBehaviorLabel(AppState app) =>
+      switch (app.settings.closeBehavior) {
+        'quit' => '直接退出',
+        'ask' => '每次询问',
+        _ => '最小化到系统托盘（双击托盘图标唤回）',
+      };
+
+  Future<void> _pickCloseBehavior(BuildContext context, AppState app) async {
+    final v = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('关闭主窗口时'),
+        content: RadioGroup<String>(
+          groupValue: app.settings.closeBehavior,
+          onChanged: (x) {
+            if (x != null) Navigator.pop(ctx, x);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (val, label) in const [
+                ('tray', '最小化到系统托盘'),
+                ('ask', '每次询问'),
+                ('quit', '直接退出程序'),
+              ])
+                RadioListTile<String>(
+                  value: val,
+                  title: Text(label),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (v != null) await app.setCloseBehavior(v);
+  }
+
+  Future<void> _setAutoStart(
+      BuildContext context, AppState app, bool v) async {
+    try {
+      launchAtStartup.setup(
+        appName: 'CrossLink 跨端互传',
+        appPath: Platform.resolvedExecutable,
+      );
+      v ? await launchAtStartup.enable() : await launchAtStartup.disable();
+      await app.setAutoStart(v);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('设置开机自启失败：$e')));
+      }
     }
   }
 

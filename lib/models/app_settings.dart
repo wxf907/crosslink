@@ -30,6 +30,12 @@ class AppSettings {
   /// 零权限，且任何文件管理器都能看到；关闭后仅留在应用缓存内。
   bool autoSavePublic;
 
+  /// 桌面端：点窗口 × 的行为 —— 'tray' 最小化到托盘 / 'ask' 每次询问 / 'quit' 直接退出
+  String closeBehavior;
+
+  /// 桌面端：登录系统时自动启动（配合托盘常驻，保障互传/打印随时可达）
+  bool autoStart;
+
   AppSettings({
     this.saveDir,
     this.notifyOnReceive = true,
@@ -40,6 +46,8 @@ class AppSettings {
     this.imagePreview = true,
     this.themeColor,
     this.autoSavePublic = true,
+    this.closeBehavior = 'tray',
+    this.autoStart = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -52,6 +60,8 @@ class AppSettings {
         'imagePreview': imagePreview,
         'themeColor': themeColor,
         'autoSavePublic': autoSavePublic,
+        'closeBehavior': closeBehavior,
+        'autoStart': autoStart,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -64,5 +74,7 @@ class AppSettings {
         imagePreview: j['imagePreview'] as bool? ?? true,
         themeColor: j['themeColor'] as int?,
         autoSavePublic: j['autoSavePublic'] as bool? ?? true,
+        closeBehavior: j['closeBehavior'] as String? ?? 'tray',
+        autoStart: j['autoStart'] as bool? ?? false,
       );
 }

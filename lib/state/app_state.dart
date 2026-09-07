@@ -657,6 +657,20 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 桌面端：点 × 的行为（'tray' / 'ask' / 'quit'）
+  Future<void> setCloseBehavior(String v) async {
+    settings.closeBehavior = v;
+    await storage.saveSettings(settings);
+    notifyListeners();
+  }
+
+  /// 桌面端：开机自动启动
+  Future<void> setAutoStart(bool v) async {
+    settings.autoStart = v;
+    await storage.saveSettings(settings);
+    notifyListeners();
+  }
+
   /// 安卓后台保活开关（实际前台服务启停由 UI 层调用 BackgroundKeepAlive）
   Future<void> setBackgroundOnline(bool v) async {
     settings.backgroundOnline = v;

@@ -34,7 +34,7 @@ $QrInRepo   = Join-Path $SrcRoot 'assets\images\wechat_contact_qr.png'
 $script:qrInjected = $false
 
 # ---- 上一版已发布的最大 versionCode（防止编号倒退导致无法覆盖安装）----
-$MinVersionCode = 32100
+$MinVersionCode = 40200
 
 # ---- APK 必须包含的原生库（arm64）----
 $RequiredLibs = @(
@@ -46,7 +46,10 @@ $RequiredLibs = @(
 # ---- APK 必须包含的资源文件 ----
 $RequiredAssets = @(
   'AssetManifest.bin', 'FontManifest.json', 'NOTICES.Z',
-  'fonts/MaterialIcons-Regular.otf'
+  'fonts/MaterialIcons-Regular.otf',
+  'assets/images/tray_icon.png',
+  'assets/images/wechat_pay_qr.png',
+  'assets/images/alipay_qr.png'
 )
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }

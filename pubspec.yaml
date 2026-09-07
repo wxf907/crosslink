@@ -14,7 +14,7 @@ publish_to: 'none'
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.2.2+40200
+version: 2.2.3+40300
 
 environment:
   sdk: ^3.12.2
@@ -66,6 +66,8 @@ dependencies:
   super_clipboard: ^0.9.1
   share_plus: ^12.0.2
   ffi: ^2.1.0
+  tray_manager: ^0.5.3
+  launch_at_startup: ^0.5.1
 
 dev_dependencies:
   flutter_test:
@@ -93,6 +95,7 @@ flutter:
     - assets/images/alipay_qr.png
     - assets/images/wechat_pay_qr.png
     - assets/images/wechat_contact_qr.png
+    - assets/images/tray_icon.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
