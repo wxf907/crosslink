@@ -14,6 +14,7 @@ import '../net/lan_transport.dart';
 import '../net/transport.dart';
 import '../services/android_public_store.dart';
 import '../services/identity_service.dart';
+import '../services/printing/print_service.dart';
 import '../services/storage_service.dart';
 
 /// 设备在列表中的展示视图（合并在线设备 + 历史会话）
@@ -82,7 +83,55 @@ class AppState extends ChangeNotifier {
     if (identity != null && settings.autoOnline) {
       await goOnline();
     }
+    // 打印服务独立于登录态：开机进托盘后即可对外可用
+    await syncPrintService();
     notifyListeners();
+  }
+
+  // ---------------- 打印服务 ----------------
+
+  Future<void> setPrintEnabled(bool v) async {
+    settings.printEnabled = v;
+    await storage.saveSettings(settings);
+    await syncPrintService();
+    notifyListeners();
+  }
+
+  Future<void> setPrintToken(String v) async {
+    settings.printToken = v;
+    await storage.saveSettings(settings);
+    await syncPrintService();
+    notifyListeners();
+  }
+
+  Future<void> setPrintPrinter(String v) async {
+    settings.printPrinter = v;
+    await storage.saveSettings(settings);
+    await syncPrintService();
+    notifyListeners();
+  }
+
+  Future<void> setPrintDailyPages(int v) async {
+    settings.printDailyPages = v;
+    await storage.saveSettings(settings);
+    await syncPrintService();
+    notifyListeners();
+  }
+
+  /// 按设置启停 IPP 服务（仅 Windows；其余平台空操作）
+  Future<void> syncPrintService() async {
+    if (!Platform.isWindows) return;
+    final s = settings;
+    if (s.printEnabled && s.printPrinter.isNotEmpty) {
+      if (s.printToken.isEmpty) {
+        settings.printToken = PrintService.instance.newToken();
+        await storage.saveSettings(settings);
+      }
+      await PrintService.instance
+          .start(s.printToken, s.printPrinter, dailyQuota: s.printDailyPages);
+    } else if (PrintService.instance.running) {
+      await PrintService.instance.stop();
+    }
   }
 
   // ---------------- 登录 / 登出 ----------------

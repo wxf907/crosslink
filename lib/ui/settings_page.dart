@@ -14,6 +14,7 @@ import 'contact_author.dart';
 import 'diagnostics_page.dart';
 import 'hotkey_settings_page.dart';
 import 'logs_page.dart';
+import 'print_service_page.dart';
 import 'qr_pages.dart';
 
 /// 设置页（左下角二级菜单）：设备名、保存路径、通知、扫码授权、日志、账号。
@@ -195,6 +196,17 @@ class SettingsPage extends StatelessWidget {
               value: app.settings.autoStart,
               onChanged: (v) => _setAutoStart(context, app, v),
             ),
+            ListTile(
+              leading: const Icon(Icons.print_outlined),
+              title: const Text('打印服务'),
+              subtitle: Text(app.settings.printEnabled
+                  ? '共享中：${app.settings.printPrinter.isEmpty ? '未选打印机' : app.settings.printPrinter}'
+                  : '让同事经系统打印界面共享本机打印机'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const PrintServicePage()),
+              ),
+            ),
           ],
             ListTile(
             leading: const Icon(Icons.favorite_outline, color: Colors.pink),
@@ -213,7 +225,7 @@ class SettingsPage extends StatelessWidget {
           const Center(
             child: Padding(
               padding: EdgeInsets.all(12),
-              child: Text('CrossLink v2.2.5',
+              child: Text('CrossLink v2.3.0',
                   style: TextStyle(color: Colors.black38, fontSize: 12)),
             ),
           ),

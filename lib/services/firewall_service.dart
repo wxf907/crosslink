@@ -83,7 +83,8 @@ class FirewallService {
 
   /// 已在管理员上下文时直接添加端口规则（提权实例调用），并写诊断日志
   Future<void> addRuleDirectly() async {
-    final tcp = '${AppConst.tcpPort}';
+    // TCP 规则同时覆盖消息端口与 IPP 打印端口（netsh 支持逗号端口列表）
+    final tcp = '${AppConst.tcpPort},${AppConst.printPort}';
     final udp = '${AppConst.discoveryPort}';
     // 先清理同名端口规则与历史遗留的按程序路径规则，再重建为纯端口规则
     for (final name in [_ruleTcp, _ruleUdp, _legacyRule]) {
@@ -110,10 +111,26 @@ class FirewallService {
     } catch (_) {}
   }
 
-  /// 缺失则提权添加。返回最终是否放行成功。
-  Future<bool> ensureRule() async {
+  /// 现有 TCP 规则是否已包含打印端口（端口数字不受本地化影响，直接搜输出）。
+  /// 老版本升级后规则只含 47822，需引导重新放行一次。
+  Future<bool> printRuleOk() async {
     if (!supported) return true;
-    if (await ruleMatches()) return true;
+    try {
+      final t = await Process.run('netsh',
+          ['advfirewall', 'firewall', 'show', 'rule', 'name=$_ruleTcp']);
+      if (t.exitCode != 0) return false;
+      return '${t.stdout}'.contains('${AppConst.printPort}');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 缺失则提权添加。返回最终是否放行成功。
+  /// forceAdd=true 用于"规则已存在但要补打印端口"的升级场景：
+  /// 跳过已放行早退，复查也按打印端口是否在内判定。
+  Future<bool> ensureRule({bool forceAdd = false}) async {
+    if (!supported) return true;
+    if (!forceAdd && await ruleMatches()) return true;
 
     // 以 UAC 提权方式重新启动自身（带参数），弹窗显示 CrossLink 图标，
     // 用户点"是"后由提权实例直接执行 netsh，无中间脚本。
@@ -134,9 +151,9 @@ class FirewallService {
     var ok = false;
     for (var i = 0; i < 5 && !ok; i++) {
       await Future.delayed(const Duration(milliseconds: 400));
-      ok = await ruleMatches();
+      ok = forceAdd ? await printRuleOk() : await ruleMatches();
     }
-    if (!ok) {
+    if (!ok && !forceAdd) {
       // 读取提权实例的诊断日志，便于定位（UAC 未确认 / 非管理员 / 被拦截）
       try {
         final f = File(
