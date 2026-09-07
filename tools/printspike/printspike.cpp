@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <string>
 #include <vector>
 
 // ---------- pdfium 动态加载 ----------
@@ -125,7 +126,24 @@ static DEVMODEW* DevModeBuf(std::vector<BYTE>& v, const wchar_t* printer) {
   return p;
 }
 
+// 查打印机端口名：DeviceCapabilities 必须带 pPort，否则部分驱动直接返回 0
+static std::wstring GetPrinterPort(const wchar_t* printer) {
+  DWORD needed = 0, count = 0;
+  EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, NULL, 2, NULL, 0, &needed, &count);
+  std::vector<BYTE> buf(needed);
+  if (!EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, NULL, 2, buf.data(), needed, &needed, &count))
+    return L"";
+  PRINTER_INFO_2W* pi = (PRINTER_INFO_2W*)buf.data();
+  for (DWORD i = 0; i < count; i++)
+    if (_wcsicmp(pi[i].pPrinterName, printer) == 0 && pi[i].pPortName)
+      return pi[i].pPortName;
+  return L"";
+}
+
 static int DoCaps(const wchar_t* printer) {
+  std::wstring portW = GetPrinterPort(printer);
+  const wchar_t* port = portW.empty() ? NULL : portW.c_str();
+  wprintf(L"port    : %ls\n", portW.empty() ? L"?" : portW.c_str());
   std::vector<BYTE> dmBuf;
   DEVMODEW* pDm = DevModeBuf(dmBuf, printer);
   if (DocumentPropertiesW(NULL, NULL, (LPWSTR)printer, pDm, NULL, DM_OUT_BUFFER) != IDOK) {
@@ -134,25 +152,26 @@ static int DoCaps(const wchar_t* printer) {
   DEVMODEW& dm = *pDm;
   wprintf(L"printer : %ls\n", printer);
   wprintf(L"copies  : driver max = %d\n",
-          DeviceCapabilitiesW(printer, NULL, DC_COPIES, NULL, NULL));
-  int duplex = DeviceCapabilitiesW(printer, NULL, DC_DUPLEX, NULL, NULL);
+          DeviceCapabilitiesW(printer, port, DC_COPIES, NULL, NULL));
+  int duplex = DeviceCapabilitiesW(printer, port, DC_DUPLEX, NULL, NULL);
   wprintf(L"duplex  : %ls (current dmDuplex=%u)\n",
           duplex == 1 ? L"supports automatic duplex" : L"NO automatic duplex",
           dm.dmDuplex);
   wprintf(L"color   : current dmColor=%u (1=mono 2=color)\n", dm.dmColor);
   wprintf(L"paper   : current dmPaperSize=%u\n", dm.dmPaperSize);
-  int n = DeviceCapabilitiesW(printer, NULL, DC_PAPERS, NULL, NULL);
+  const int kCap = 128;
+  std::vector<WORD> papers(kCap);
+  int n = DeviceCapabilitiesW(printer, port, DC_PAPERS, (LPWSTR)papers.data(), &dm);
+  DWORD e1 = GetLastError();
+  int n2 = DeviceCapabilitiesW(printer, port, DC_PAPERS, (LPWSTR)papers.data(), NULL);
+  DWORD e2 = GetLastError();
+  wprintf(L"[dbg] DC_PAPERS with-dm=%d(err=%lu) no-dm=%d(err=%lu)\n", n, e1, n2, e2);
+  if (n <= 0) n = n2;
+  if (n > kCap) n = kCap;
   if (n > 0) {
-    std::vector<WORD> papers(n);
-    std::vector<char> names((size_t)n * 64);
-    std::vector<POINT> sizes(n);
-    DeviceCapabilitiesW(printer, NULL, DC_PAPERS, (LPWSTR)papers.data(), NULL);
-    DeviceCapabilitiesW(printer, NULL, DC_PAPERNAMES, (LPWSTR)names.data(), NULL);
-    DeviceCapabilitiesW(printer, NULL, DC_PAPERSIZE, (LPWSTR)sizes.data(), NULL);
+    // 注意：DC_PAPERNAMES/DC_PAPERSIZE 在部分厂商驱动上不稳定（Canon 实测崩溃），
+    // 正式实现改用 EnumFormsEx 取纸张表；spike 只报数量。
     wprintf(L"papers  : %d supported\n", n);
-    for (int i = 0; i < n; i++)
-      wprintf(L"   [%u] %hs  (%ldx%ld 0.1mm)\n", papers[i],
-              &names[(size_t)i * 64], sizes[i].x, sizes[i].y);
   }
   return 0;
 }
