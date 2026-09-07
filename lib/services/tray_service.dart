@@ -46,6 +46,13 @@ class TrayService with TrayListener {
   @override
   void onTrayIconMouseDown() => showWindow();
 
+  /// Windows 下 setContextMenu 只是备好菜单，右键不会自动弹出，
+  /// 必须在右键事件里主动调用 popUpContextMenu
+  @override
+  void onTrayIconRightMouseDown() {
+    trayManager.popUpContextMenu();
+  }
+
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
     if (menuItem.key == 'open') {
