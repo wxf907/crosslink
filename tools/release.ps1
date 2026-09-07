@@ -47,7 +47,7 @@ $RequiredLibs = @(
 $RequiredAssets = @(
   'AssetManifest.bin', 'FontManifest.json', 'NOTICES.Z',
   'fonts/MaterialIcons-Regular.otf',
-  'assets/images/tray_icon.png',
+  'assets/images/tray_icon.ico',
   'assets/images/wechat_pay_qr.png',
   'assets/images/alipay_qr.png'
 )

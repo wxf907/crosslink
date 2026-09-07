@@ -2,7 +2,7 @@
 ; 构建：ISCC.exe crosslink_setup.iss
 
 #define MyAppName "CrossLink 跨端互传"
-#define MyAppVersion "2.2.3"
+#define MyAppVersion "2.2.4"
 #define MyAppPublisher "CrossLink"
 #define MyAppExeName "crosslink.exe"
 ; Release 产物目录（源码实体路径，避免联接解析回中文路径）

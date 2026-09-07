@@ -20,7 +20,9 @@ class TrayService with TrayListener {
   Future<void> init() async {
     if (!supported || _ready) return;
     try {
-      await trayManager.setIcon('assets/images/tray_icon.png');
+      // 必须用 .ico：Windows 原生 LoadImage(IMAGE_ICON) 不认 PNG，
+      // 且失败不报错，只会得到一个空白"阴影"图标
+      await trayManager.setIcon('assets/images/tray_icon.ico');
       await trayManager.setToolTip('CrossLink 跨端互传');
       await trayManager.setContextMenu(Menu(items: [
         MenuItem(key: 'open', label: '打开主界面'),
