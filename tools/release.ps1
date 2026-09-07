@@ -17,7 +17,9 @@
 $ErrorActionPreference = 'Stop'
 
 $SrcRoot   = 'D:\crosslink_src'
-$Junction  = 'D:\clink'                       # MSVC 不接受中文路径，构建走联接
+# 不再经 D:\clink 联接构建：真实路径本就是 ASCII；同一棵树两种路径写法
+# 混用会打脏 CMake 缓存里的绝对路径（configure 与 build 路径不一致 → C1083）
+$Junction  = $SrcRoot
 $Delivery  = 'E:\' + [char]0x6587 + [char]0x6863 + [char]0x751F + [char]0x6210 + [char]0x6C99 + [char]0x76D2
 $Delivery  = Join-Path $Delivery ([char]0x901A + [char]0x8BAF + [char]0x7A0B + [char]0x5E8F)
 $Delivery  = Join-Path $Delivery ([char]0x4EA4 + [char]0x4ED8 + [char]0x4EA7 + [char]0x7269)
