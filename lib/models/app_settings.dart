@@ -36,6 +36,18 @@ class AppSettings {
   /// 桌面端：登录系统时自动启动（配合托盘常驻，保障互传/打印随时可达）
   bool autoStart;
 
+  /// 桌面端：打印服务（IPP）开关
+  bool printEnabled;
+
+  /// 接入令牌（URL 路径片段，重置即换）；空=尚未生成
+  String printToken;
+
+  /// 共享的打印机名（本机已安装的打印机之一）
+  String printPrinter;
+
+  /// 每日打印页数配额（按任务份数×页数累计，防滥用）
+  int printDailyPages;
+
   AppSettings({
     this.saveDir,
     this.notifyOnReceive = true,
@@ -48,6 +60,10 @@ class AppSettings {
     this.autoSavePublic = true,
     this.closeBehavior = 'tray',
     this.autoStart = false,
+    this.printEnabled = false,
+    this.printToken = '',
+    this.printPrinter = '',
+    this.printDailyPages = 200,
   });
 
   Map<String, dynamic> toJson() => {
@@ -62,6 +78,10 @@ class AppSettings {
         'autoSavePublic': autoSavePublic,
         'closeBehavior': closeBehavior,
         'autoStart': autoStart,
+        'printEnabled': printEnabled,
+        'printToken': printToken,
+        'printPrinter': printPrinter,
+        'printDailyPages': printDailyPages,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -76,5 +96,9 @@ class AppSettings {
         autoSavePublic: j['autoSavePublic'] as bool? ?? true,
         closeBehavior: j['closeBehavior'] as String? ?? 'tray',
         autoStart: j['autoStart'] as bool? ?? false,
+        printEnabled: j['printEnabled'] as bool? ?? false,
+        printToken: j['printToken'] as String? ?? '',
+        printPrinter: j['printPrinter'] as String? ?? '',
+        printDailyPages: j['printDailyPages'] as int? ?? 200,
       );
 }

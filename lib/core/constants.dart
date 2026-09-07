@@ -16,6 +16,9 @@ class AppConst {
   /// 若被占用，运行时自动回退为随机端口（广播里携带真实端口）
   static const int tcpPort = 47822;
 
+  /// IPP 打印服务监听端口（防火墙按端口放行 TCP 47823）
+  static const int printPort = 47823;
+
   /// UDP 设备心跳广播间隔
   static const Duration announceInterval = Duration(seconds: 3);
 
