@@ -279,10 +279,16 @@ static int DoPrint(const wchar_t* pdf, const wchar_t* printer, int argc, wchar_t
     FPDF_HANDLE page = fpdf_LoadPage(doc, idx);
     double wpt = 0, hpt = 0; fpdf_PageSize(doc, idx, &wpt, &hpt);
     double wpix = wpt * dpiX / 72.0, hpix = hpt * dpiY / 72.0;
-    double areaW = physW - 2.0 * offX, areaH = physH - 2.0 * offY;
-    double scale = min(areaW / wpix, areaH / hpix);
-    int w = (int)(wpix * scale), h = (int)(hpix * scale);
-    int x = offX + (int)((areaW - w) / 2), y = offY + (int)((areaH - h) / 2);
+    int x, y, w, h;
+    if (ArgFlag(argc, argv, L"--raw100")) {
+      // 正式策略：客户端驱动已排好版，1:1 铺到纸张原点，不缩放不居中
+      x = 0; y = 0; w = (int)wpix; h = (int)hpix;
+    } else {
+      double areaW = physW - 2.0 * offX, areaH = physH - 2.0 * offY;
+      double scale = min(areaW / wpix, areaH / hpix);
+      w = (int)(wpix * scale); h = (int)(hpix * scale);
+      x = offX + (int)((areaW - w) / 2); y = offY + (int)((areaH - h) / 2);
+    }
     StartPage(hdc);
     fpdf_Render(hdc, page, x, y, w, h, 0, 2 | 4);
     EndPage(hdc);
