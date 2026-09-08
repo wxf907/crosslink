@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants.dart';
+import '../../services/printing/print_service.dart';
 import '../../state/app_state.dart';
 import '../contact_author.dart';
+import '../print_service_page.dart';
 import '../settings_page.dart';
 import 'manual_connect.dart';
 
@@ -200,10 +202,48 @@ class DeviceSidebar extends StatelessWidget {
                   ),
                 ),
               ),
+              if (Platform.isWindows) const PrintEntryButton(),
               const ContactEntryButton(),
               const SizedBox(width: 8),
             ],
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 首页「打印」入口（仅 Windows）：直达打印服务页，带服务状态点
+class PrintEntryButton extends StatelessWidget {
+  const PrintEntryButton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final svc = PrintService.instance;
+    final color = !app.settings.printEnabled
+        ? Colors.grey
+        : (svc.running && !svc.paused ? Colors.green : Colors.orange);
+    return TextButton(
+      onPressed: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const PrintServicePage()),
+      ),
+      style: TextButton.styleFrom(
+        foregroundColor: Colors.black54,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          const Text('打印', style: TextStyle(fontSize: 13)),
         ],
       ),
     );

@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../core/constants.dart';
 import '../services/firewall_service.dart';
 import '../services/print_engine.dart';
 import '../services/printing/print_service.dart';
@@ -40,6 +39,7 @@ class _PrintServicePageState extends State<PrintServicePage> {
   @override
   void dispose() {
     _poll?.cancel();
+    _urlCtrl.dispose();
     super.dispose();
   }
 
@@ -93,7 +93,7 @@ class _PrintServicePageState extends State<PrintServicePage> {
 
   String get _accessUrl => _app.settings.printToken.isEmpty
       ? '—'
-      : 'http://$_localIp:${AppConst.printPort}/printers/${_app.settings.printToken}';
+      : 'http://$_localIp:${PrintService.instance.port}/printers/${_app.settings.printToken}';
 
   @override
   Widget build(BuildContext context) {
@@ -103,6 +103,7 @@ class _PrintServicePageState extends State<PrintServicePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (!s.printEnabled) _connectCard(),
           Card(
             child: SwitchListTile(
               secondary: const Icon(Icons.print_outlined),
@@ -233,6 +234,77 @@ class _PrintServicePageState extends State<PrintServicePage> {
         PrintState.problem => '打印机异常（缺纸/离线/故障）',
         PrintState.offline => '未共享或打印机离线',
       };
+
+  final _urlCtrl = TextEditingController();
+
+  /// 未开启共享时显示：粘贴同事给的接入地址，一键添加为系统打印机
+  Widget _connectCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('连接到同事共享的打印机',
+                style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 6),
+            const Text('粘贴对方发给你的接入地址（形如 http://192.168.1.8:631/printers/xxxx），'
+                '点「一键安装」添加为系统打印机；之后任何软件都能直接打印。',
+                style: TextStyle(fontSize: 12, color: Colors.black54)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _urlCtrl,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'http://…/printers/…',
+              ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                icon: const Icon(Icons.print_outlined, size: 18),
+                label: const Text('一键安装'),
+                onPressed: _installPrinter,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text('若弹出"输入 Windows 凭据"：用户名随意填，密码填对方给的接入令牌。',
+                style: TextStyle(fontSize: 11, color: Colors.black45)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static final _urlRe = RegExp(r'^http://[A-Za-z0-9.\-_:]+(:\d+)?(/[A-Za-z0-9\-_./]*)*$');
+
+  Future<void> _installPrinter() async {
+    final url = _urlCtrl.text.trim();
+    final msg = ScaffoldMessenger.of(context);
+    if (!_urlRe.hasMatch(url)) {
+      msg.showSnackBar(const SnackBar(content: Text('地址格式不正确（示例 http://192.168.1.8:631/printers/令牌）')));
+      return;
+    }
+    try {
+      final r = await Process.run('powershell', [
+        '-NoProfile',
+        '-Command',
+        "(New-Object -ComObject WScript.Network).AddPrinterConnection('', '$url')"
+      ]);
+      if (!mounted) return;
+      if (r.exitCode == 0) {
+        msg.showSnackBar(const SnackBar(content: Text('已添加！到 控制面板→设备和打印机 可确认')));
+      } else {
+        msg.showSnackBar(SnackBar(
+            content: Text('添加失败：${(r.stderr as String?)?.trim() ?? '未知错误'}\n可改用系统"添加打印机"向导手动接入')));
+      }
+    } catch (e) {
+      if (mounted) {
+        msg.showSnackBar(SnackBar(content: Text('添加失败：$e')));
+      }
+    }
+  }
 
   Future<void> _onToggle(bool v) async {
     if (v && _app.settings.printPrinter.isEmpty) {

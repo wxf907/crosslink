@@ -9,13 +9,15 @@ import 'package:crosslink/services/printing/print_service.dart';
 
 /// 返回 (HTTP 状态码, 响应体)。flutter_test 会 mock HttpClient，
 /// 因此用裸 Socket 手写最小 HTTP 请求。
-Future<(int, Uint8List)> httpPost(String path, Uint8List body) async {
-  final s = await Socket.connect('127.0.0.1', 47823,
+Future<(int, Uint8List)> httpPost(String path, Uint8List body,
+    {int port = 47823, String? authHeader}) async {
+  final s = await Socket.connect('127.0.0.1', port,
       timeout: const Duration(seconds: 5));
   final head = 'POST $path HTTP/1.1\r\n'
       'Host: 127.0.0.1\r\n'
       'Content-Type: application/ipp\r\n'
       'Content-Length: ${body.length}\r\n'
+      '${authHeader == null ? '' : 'Authorization: $authHeader\r\n'}'
       'Connection: close\r\n\r\n';
   s.add(utf8.encode(head));
   s.add(body);
@@ -47,8 +49,10 @@ int _indexOf(List<int> haystack, List<int> needle) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  int port() => PrintService.instance.port;
+
   Future<Uint8List> postIpp(Uint8List body) async {
-    final (code, resp) = await httpPost('/printers/t123', body);
+    final (code, resp) = await httpPost('/printers/t123', body, port: port());
     expect(code, 200);
     return resp;
   }
@@ -68,6 +72,26 @@ void main() {
     await PrintService.instance.stop();
   });
 
+  test('根路径：无认证 401，Basic 密码=令牌 200', () async {
+    final msg = IppMessage(1, 1, kOpGetPrinterAttributes, 1, [opAttrs()]);
+    // 无 Authorization → 401
+    final (c1, _) = await httpPost('/', msg.encode(), port: port());
+    expect(c1, 401);
+    // 密码错误 → 401
+    final bad = base64.encode(utf8.encode('any:wrong'));
+    final (c2, _) = await httpPost('/', msg.encode(),
+        port: port(), authHeader: 'Basic $bad');
+    expect(c2, 401);
+    // 用户名任意 + 密码=令牌 → 200 且能力集正常
+    final good = base64.encode(utf8.encode('print:t123'));
+    final (c3, resp) = await httpPost('/', msg.encode(),
+        port: port(), authHeader: 'Basic $good');
+    expect(c3, 200);
+    final (r, _) = decodeIpp(resp);
+    expect(r.operationOrStatus, kOk);
+    expect(r.group(kTagPrinter)!['printer-name']!.firstString, 'FakePrinter');
+  });
+
   test('Get-Printer-Attributes 返回能力集', () async {
     final msg = IppMessage(1, 1, kOpGetPrinterAttributes, 1, [opAttrs()]);
     final (r, _) = decodeIpp(await postIpp(msg.encode()));
@@ -79,7 +103,8 @@ void main() {
   });
 
   test('错误令牌被拒绝', () async {
-    final (code, _) = await httpPost('/printers/wrong', Uint8List.fromList([0, 0, 0, 0]));
+    final (code, _) = await httpPost('/printers/wrong',
+        Uint8List.fromList([0, 0, 0, 0]), port: port());
     expect(code, 401);
   });
 

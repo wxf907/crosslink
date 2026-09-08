@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -88,24 +89,40 @@ class PrintService extends ChangeNotifier {
   String newToken() =>
       List.generate(8, (_) => _rng.nextInt(16).toRadixString(16)).join();
 
+  int _port = AppConst.printPort;
+
+  /// 实际监听端口（631 成功或被占回退 47823）
+  int get port => _port;
+
   Future<void> start(String token, String printer, {int dailyQuota = 200}) async {
     if (!PrintEngine.supported) return;
     if (_server != null) await stop();
     if (token.isEmpty) return;
     _dailyQuota = dailyQuota <= 0 ? 200 : dailyQuota;
+    HttpServer? s;
+    var port = AppConst.printPort;
     try {
-      final s = await HttpServer.bind(InternetAddress.anyIPv4, AppConst.printPort);
-      _server = s;
-      _printer = printer;
-      _token = token;
-      s.listen(_onHttp, onError: (Object e) => log.e('PRINT', 'http 异常: $e'));
-      log.i('PRINT', '打印服务已启动 :${AppConst.printPort} printers/$token -> $printer');
-      await PrintEngine.instance.ensureHandler();
-      PrintEngine.instance.onJobDone = _onNativeDone;
-    } catch (e) {
-      log.e('PRINT', '打印服务启动失败（端口占用？）: $e');
-      _server = null;
+      // 首选 IPP 标准端口 631：Windows 添加向导默认值，主机名即达
+      s = await HttpServer.bind(InternetAddress.anyIPv4, port);
+    } catch (_) {
+      port = AppConst.printPortAlt;
+      try {
+        s = await HttpServer.bind(InternetAddress.anyIPv4, port);
+        log.w('PRINT', '631 被占用，回退端口 $port（同事添加时需手填端口）');
+      } catch (e) {
+        log.e('PRINT', '打印服务启动失败（631/$port 均不可用）: $e');
+        _server = null;
+        return;
+      }
     }
+    _server = s;
+    _port = port;
+    _printer = printer;
+    _token = token;
+    s.listen(_onHttp, onError: (Object e) => log.e('PRINT', 'http 异常: $e'));
+    log.i('PRINT', '打印服务已启动 :$port printers/$token -> $printer');
+    await PrintEngine.instance.ensureHandler();
+    PrintEngine.instance.onJobDone = _onNativeDone;
   }
 
   Future<void> stop() async {
@@ -131,17 +148,41 @@ class PrintService extends ChangeNotifier {
         ..write('<html><body style="font-family:sans-serif">'
             '<h3>CrossLink 打印服务运行中</h3>'
             '<p>本页面用于确认服务在线；打印需在系统中添加网络打印机，'
-            '地址为 http://本机IP:${AppConst.printPort}/printers/&lt;令牌&gt;</p>'
+            '地址为 http://本机IP:$_port/printers/&lt;令牌&gt;（或根路径 + Basic 认证）</p>'
             '</body></html>');
       await req.response.close();
       return;
     }
-    if (req.method != 'POST' || !path.startsWith('/printers/')) {
+    if (req.method != 'POST') {
       req.response.statusCode = 404;
       await req.response.close();
       return;
     }
-    if (path.split('/').last != _token) {
+    // 认证：/printers/<令牌> 直接放行；根路径走 Basic（密码=令牌，用户名任意），
+    // 让 Windows 像共享打印机一样弹"输入网络凭据"
+    var authorized = false;
+    if (path.startsWith('/printers/') && path.split('/').last == _token) {
+      authorized = true;
+    } else if (path == '/' || path == '/printers') {
+      final auth = req.headers.value(HttpHeaders.authorizationHeader) ?? '';
+      if (auth.startsWith('Basic ')) {
+        try {
+          final decoded = utf8.decode(base64.decode(auth.substring(6).trim()));
+          final sep = decoded.indexOf(':');
+          if (sep >= 0 && decoded.substring(sep + 1) == _token) authorized = true;
+        } catch (_) {}
+      }
+      if (!authorized) {
+        req.response
+          ..statusCode = 401
+          ..headers.set(HttpHeaders.wwwAuthenticateHeader,
+              'Basic realm="CrossLink Print"')
+          ..close();
+        log.w('PRINT', '拒绝：Basic 认证失败 ${req.connectionInfo?.remoteAddress.address}');
+        return;
+      }
+    }
+    if (!authorized) {
       req.response.statusCode = 401;
       await req.response.close();
       log.w('PRINT', '拒绝：令牌不符 ${req.connectionInfo?.remoteAddress.address}');
@@ -224,7 +265,7 @@ class PrintService extends ChangeNotifier {
       statusBits = await PrintEngine.instance.printerStatus(_printer);
     } catch (_) {}
     final host = http.requestedUri.host;
-    final uri = 'http://$host:${AppConst.printPort}/printers/$_token';
+    final uri = 'http://$host:$_port/printers/$_token';
 
     final media = <Object>[];
     for (final p in caps.papers) {

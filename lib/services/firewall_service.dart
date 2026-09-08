@@ -83,8 +83,9 @@ class FirewallService {
 
   /// 已在管理员上下文时直接添加端口规则（提权实例调用），并写诊断日志
   Future<void> addRuleDirectly() async {
-    // TCP 规则同时覆盖消息端口与 IPP 打印端口（netsh 支持逗号端口列表）
-    final tcp = '${AppConst.tcpPort},${AppConst.printPort}';
+    // TCP 规则同时覆盖消息端口、打印回退端口与标准 IPP 631（netsh 支持逗号端口列表）
+    final tcp =
+        '${AppConst.tcpPort},${AppConst.printPortAlt},${AppConst.printPort}';
     final udp = '${AppConst.discoveryPort}';
     // 先清理同名端口规则与历史遗留的按程序路径规则，再重建为纯端口规则
     for (final name in [_ruleTcp, _ruleUdp, _legacyRule]) {
