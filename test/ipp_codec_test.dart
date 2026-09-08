@@ -25,7 +25,7 @@ void main() {
     bytes.add([0, 0, 0, 7]); // request-id
     bytes.addByte(kTagOperation);
     bytes.add(_attr(kTagCharset, 'attributes-charset', utf8.encode('utf-8')));
-    bytes.add(_attr(kTagNaturalLang, 'attributes-naturalLanguage', utf8.encode('en')));
+    bytes.add(_attr(kTagNaturalLang, 'attributes-natural-language', utf8.encode('en')));
     bytes.add(_attr(kTagUri, 'printer-uri', utf8.encode('http://127.0.0.1:47823/printers/t1')));
     bytes.addByte(kTagEnd);
 

@@ -94,33 +94,40 @@ class PrintService extends ChangeNotifier {
   /// 实际监听端口（631 成功或被占回退 47823）
   int get port => _port;
 
-  Future<void> start(String token, String printer, {int dailyQuota = 200}) async {
+  Future<void> start(String token, String printer,
+      {int dailyQuota = 200, int? port}) async {
     if (!PrintEngine.supported) return;
     if (_server != null) await stop();
     if (token.isEmpty) return;
     _dailyQuota = dailyQuota <= 0 ? 200 : dailyQuota;
     HttpServer? s;
-    var port = AppConst.printPort;
     try {
-      // 首选 IPP 标准端口 631：Windows 添加向导默认值，主机名即达
-      s = await HttpServer.bind(InternetAddress.anyIPv4, port);
-    } catch (_) {
-      port = AppConst.printPortAlt;
-      try {
+      if (port != null) {
+        // 测试注入：0 表示随机端口，避免并行套件抢占 631
         s = await HttpServer.bind(InternetAddress.anyIPv4, port);
-        log.w('PRINT', '631 被占用，回退端口 $port（同事添加时需手填端口）');
+        _port = s.port;
+      } else {
+        // 首选 IPP 标准端口 631：Windows 添加向导默认值，主机名即达
+        s = await HttpServer.bind(InternetAddress.anyIPv4, AppConst.printPort);
+        _port = AppConst.printPort;
+      }
+    } catch (_) {
+      try {
+        s = await HttpServer.bind(
+            InternetAddress.anyIPv4, AppConst.printPortAlt);
+        _port = AppConst.printPortAlt;
+        log.w('PRINT', '631 被占用，回退端口 $_port（同事添加时需手填端口）');
       } catch (e) {
-        log.e('PRINT', '打印服务启动失败（631/$port 均不可用）: $e');
+        log.e('PRINT', '打印服务启动失败（631/47823 均不可用）: $e');
         _server = null;
         return;
       }
     }
     _server = s;
-    _port = port;
     _printer = printer;
     _token = token;
     s.listen(_onHttp, onError: (Object e) => log.e('PRINT', 'http 异常: $e'));
-    log.i('PRINT', '打印服务已启动 :$port printers/$token -> $printer');
+    log.i('PRINT', '打印服务已启动 :$_port printers/$token -> $printer');
     await PrintEngine.instance.ensureHandler();
     PrintEngine.instance.onJobDone = _onNativeDone;
   }
@@ -226,9 +233,9 @@ class PrintService extends ChangeNotifier {
     final id = req.requestId;
     switch (req.operationOrStatus) {
       case kOpGetPrinterAttributes:
-        return _printerAttributesResp(id, http);
+        return _printerAttributesResp(req, http);
       case kOpValidateJob:
-        return IppMessage.buildResponse(id, kOk);
+        return IppMessage.buildResponse(id, kOk, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
       case kOpPrintJob:
         return _createJobResp(id, req, doc);
       case kOpCreateJob:
@@ -236,27 +243,28 @@ class PrintService extends ChangeNotifier {
       case kOpSendDocument:
         return _sendDocumentResp(id, req, doc);
       case kOpGetJobs:
-        return _getJobsResp(id);
+        return _getJobsResp(req);
       case kOpGetJobAttributes:
-        return _jobAttributesResp(id, req);
+        return _jobAttributesResp(req);
       case kOpCancelJob:
-        return _cancelJobResp(id, req);
+        return _cancelJobResp(req);
       case kOpHoldJob:
-        return _holdJobResp(id, req, true);
+        return _holdJobResp(req, true);
       case kOpReleaseJob:
-        return _holdJobResp(id, req, false);
+        return _holdJobResp(req, false);
       case kOpPausePrinter:
         setPaused(true);
-        return IppMessage.buildResponse(id, kOk);
+        return IppMessage.buildResponse(id, kOk, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
       case kOpResumePrinter:
         setPaused(false);
-        return IppMessage.buildResponse(id, kOk);
+        return IppMessage.buildResponse(id, kOk, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
       default:
-        return IppMessage.buildResponse(id, kErrBadRequest);
+        return IppMessage.buildResponse(id, kErrBadRequest, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
     }
   }
 
-  Future<Uint8List> _printerAttributesResp(int id, HttpRequest http) async {
+  Future<Uint8List> _printerAttributesResp(IppMessage req, HttpRequest http) async {
+    final id = req.requestId;
     PrinterCaps caps = const PrinterCaps(
         duplex: false, color: false, maxCopies: 1, papers: []);
     int statusBits = -1;
@@ -288,8 +296,13 @@ class PrintService extends ChangeNotifier {
 
     final grp = IppGroup(kTagPrinter, [
       IppAttr('printer-uri-supported', kTagUri, [uri]),
+      const IppAttr('charset', kTagCharset, ['utf-8']),
+      const IppAttr('naturalLanguage', kTagNaturalLang, ['en-us']),
       const IppAttr('uri-authentication-supported', kTagKeyword, ['none']),
       const IppAttr('uri-security-supported', kTagKeyword, ['none']),
+      const IppAttr('printer-make-and-model', kTagNameNoLang,
+          ['CrossLink IPP Printer']),
+      const IppAttr('printer-location', kTagNameNoLang, ['']),
       const IppAttr('printer-info', kTagNameNoLang, ['CrossLink 共享打印']),
       IppAttr('printer-name', kTagNameNoLang, [_printer]),
       IppAttr('printer-state', kTagEnum, [printerState]),
@@ -299,8 +312,22 @@ class PrintService extends ChangeNotifier {
       IppAttr('queued-job-count', kTagInteger, [queuedCount]),
       IppAttr('media-ready', kTagKeyword, [media.first]),
       IppAttr('media-supported', kTagKeyword, media),
+      IppAttr('media-size-supported', kTagInteger, _mediaSizes(caps.papers)),
+      IppAttr('media-bottom-margin', kTagInteger, [500]),
+      IppAttr('media-top-margin', kTagInteger, [500]),
+      IppAttr('media-left-margin', kTagInteger, [500]),
+      IppAttr('media-right-margin', kTagInteger, [500]),
+      const IppAttr('media-source-supported', kTagKeyword, ['top', 'auto']),
+      const IppAttr('media-type-supported', kTagKeyword,
+          ['stationery', 'plain', 'lettersheet']),
       IppAttr('sides-supported', kTagKeyword, sides),
+      IppAttr('sides-default', kTagKeyword, ['one-sided']),
       IppAttr('print-color-mode-supported', kTagKeyword, colorModes),
+      IppAttr('print-color-mode-default', kTagKeyword, ['color']),
+      IppAttr('media-default', kTagKeyword, [media.first]),
+      IppAttr('printer-up-time', kTagInteger,
+          [DateTime.now().millisecondsSinceEpoch ~/ 1000]),
+      const IppAttr('printer-config-change-date-time', kTagInteger, [1]),
       IppAttr('job-copies-supported', kTagRangeOfInteger,
           [IppRange(1, caps.maxCopies.clamp(1, 99))]),
       IppAttr('job-copies-ready', kTagInteger, [1]),
@@ -328,12 +355,28 @@ class PrintService extends ChangeNotifier {
       const IppAttr('job-creation-attributes-supported', kTagKeyword,
           ['copies', 'page-ranges', 'sides', 'print-color-mode', 'media', 'job-name']),
     ]);
-    return IppMessage(1, 1, kOk, id, [_opAttrs(), grp]).encode();
+    return IppMessage(req.versionMajor, req.versionMinor, kOk, id, [_opAttrs(), grp]).encode();
+  }
+
+  /// media-size-supported：每个值为 (宽,高) 两个大端 int32（微米）
+  static List<Object> _mediaSizes(List<PaperInfo> papers) {
+    Uint8List pair(int wmm, int hmm) {
+      final b = ByteData(8)
+        ..setInt32(0, wmm * 1000)
+        ..setInt32(4, hmm * 1000);
+      return b.buffer.asUint8List();
+    }
+    final out = <Object>[];
+    for (final p in papers) {
+      if (p.wmm > 0 && p.hmm > 0) out.add(pair(p.wmm, p.hmm));
+    }
+    if (out.isEmpty) out.add(pair(210, 297)); // 至少 A4
+    return out;
   }
 
   static IppGroup _opAttrs() => IppGroup(kTagOperation, const [
-        IppAttr('attributes-charset', kTagCharset, ['utf-8']),
-        IppAttr('attributes-naturalLanguage', kTagNaturalLang, ['en']),
+        IppAttr('charset', kTagCharset, ['utf-8']),
+        IppAttr('naturalLanguage', kTagNaturalLang, ['en-us']),
       ]);
 
   static IppGroup _jobAttrs(PrintJob j) => IppGroup(kTagJob, [
@@ -359,7 +402,8 @@ class PrintService extends ChangeNotifier {
         JobState.canceled => 7, // canceled
       };
 
-  Uint8List _getJobsResp(int id) {
+  Uint8List _getJobsResp(IppMessage req) {
+    final id = req.requestId;
     final groups = <IppGroup>[_opAttrs()];
     for (final j in _jobs.reversed) {
       final active = j.state == JobState.queued ||
@@ -367,14 +411,15 @@ class PrintService extends ChangeNotifier {
           j.state == JobState.printing;
       if (active) groups.add(_jobAttrs(j));
     }
-    return IppMessage(1, 1, kOk, id, groups).encode();
+    return IppMessage(req.versionMajor, req.versionMinor, kOk, id, groups).encode();
   }
 
-  Uint8List _jobAttributesResp(int id, IppMessage req) {
+  Uint8List _jobAttributesResp(IppMessage req) {
+    final id = req.requestId;
     final jid = req.group(kTagJob)?['job-id']?.firstInt;
     final j = _jobs.firstWhereOrNull((e) => e.id == jid);
-    if (j == null) return IppMessage.buildResponse(id, kErrNotFound);
-    return IppMessage(1, 1, kOk, id, [_opAttrs(), _jobAttrs(j)]).encode();
+    if (j == null) return IppMessage.buildResponse(id, kErrNotFound, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
+    return IppMessage(req.versionMajor, req.versionMinor, kOk, id, [_opAttrs(), _jobAttrs(j)]).encode();
   }
 
   Uint8List _createJobResp(int id, IppMessage req, Uint8List? doc) {
@@ -401,9 +446,10 @@ class PrintService extends ChangeNotifier {
     final estimated = copies * (selectedPages > 0 ? selectedPages : 1);
     if (_quotaUsed + estimated > _dailyQuota) {
       log.w('PRINT', '配额拒绝：今日已用 $_quotaUsed/$_dailyQuota，任务需 $estimated 页');
-      return IppMessage(1, 1, kErrForbidden, id, [
+      return IppMessage(req.versionMajor, req.versionMinor, kErrForbidden, id, [
         IppGroup(kTagOperation, [
-          const IppAttr('attributes-charset', kTagCharset, ['utf-8']),
+          const IppAttr('charset', kTagCharset, ['utf-8']),
+          const IppAttr('naturalLanguage', kTagNaturalLang, ['en-us']),
           IppAttr('status-message', kTagNameNoLang, ['今日打印配额已用完（$_dailyQuota 页）']),
         ]),
       ]).encode();
@@ -434,25 +480,26 @@ class PrintService extends ChangeNotifier {
     }
     notifyListeners();
     log.i('PRINT', '新任务 #${j.id} ${j.fileName} ×${j.copies} by ${j.clientName}');
-    return IppMessage(1, 1, kOk, id, [_opAttrs(), _jobAttrs(j)]).encode();
+    return IppMessage(req.versionMajor, req.versionMinor, kOk, id, [_opAttrs(), _jobAttrs(j)]).encode();
   }
 
   Uint8List _sendDocumentResp(int id, IppMessage req, Uint8List doc) {
     final jid = req.group(kTagJob)?['job-id']?.firstInt;
     final j = _jobs.firstWhereOrNull((e) => e.id == jid);
-    if (j == null) return IppMessage.buildResponse(id, kErrNotFound);
-    if (doc.isEmpty) return IppMessage.buildResponse(id, kErrBadRequest);
+    if (j == null) return IppMessage.buildResponse(id, kErrNotFound, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
+    if (doc.isEmpty) return IppMessage.buildResponse(id, kErrBadRequest, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
     j.state = JobState.queued;
     _saveTempAndEnqueue(j, doc);
-    return IppMessage(1, 1, kOk, id, [_opAttrs(), _jobAttrs(j)]).encode();
+    return IppMessage(req.versionMajor, req.versionMinor, kOk, id, [_opAttrs(), _jobAttrs(j)]).encode();
   }
 
-  Uint8List _cancelJobResp(int id, IppMessage req) {
+  Uint8List _cancelJobResp(IppMessage req) {
+    final id = req.requestId;
     final jid = req.group(kTagJob)?['job-id']?.firstInt;
     final j = _jobs.firstWhereOrNull((e) => e.id == jid);
-    if (j == null) return IppMessage.buildResponse(id, kErrNotFound);
+    if (j == null) return IppMessage.buildResponse(id, kErrNotFound, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
     if (j.state == JobState.printing) {
-      return IppMessage.buildResponse(id, kErrBadRequest); // 正在出纸不可取消
+      return IppMessage.buildResponse(id, kErrBadRequest, versionMajor: req.versionMajor, versionMinor: req.versionMinor); // 正在出纸不可取消
     }
     if (j.state == JobState.queued || j.state == JobState.held) {
       j.state = JobState.canceled;
@@ -461,20 +508,21 @@ class PrintService extends ChangeNotifier {
       notifyListeners();
       log.i('PRINT', '任务 #${j.id} 已取消（远程）');
     }
-    return IppMessage.buildResponse(id, kOk);
+    return IppMessage.buildResponse(id, kOk, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
   }
 
-  Uint8List _holdJobResp(int id, IppMessage req, bool hold) {
+  Uint8List _holdJobResp(IppMessage req, bool hold) {
+    final id = req.requestId;
     final jid = req.group(kTagJob)?['job-id']?.firstInt;
     final j = _jobs.firstWhereOrNull((e) => e.id == jid);
-    if (j == null) return IppMessage.buildResponse(id, kErrNotFound);
+    if (j == null) return IppMessage.buildResponse(id, kErrNotFound, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
     if (hold && j.state == JobState.queued) j.state = JobState.held;
     if (!hold && j.state == JobState.held) {
       j.state = JobState.queued;
       _pump();
     }
     notifyListeners();
-    return IppMessage.buildResponse(id, kOk);
+    return IppMessage.buildResponse(id, kOk, versionMajor: req.versionMajor, versionMinor: req.versionMinor);
   }
 
   // ---------------- 队列执行 ----------------

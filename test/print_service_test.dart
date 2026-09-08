@@ -59,13 +59,13 @@ void main() {
 
   IppGroup opAttrs() => IppGroup(kTagOperation, const [
         IppAttr('attributes-charset', kTagCharset, ['utf-8']),
-        IppAttr('attributes-naturalLanguage', kTagNaturalLang, ['en']),
+        IppAttr('attributes-natural-language', kTagNaturalLang, ['en']),
         IppAttr('printer-uri', kTagUri, ['http://127.0.0.1:47823/printers/t123']),
         IppAttr('requesting-user-name', kTagNameNoLang, ['tester']),
       ]);
 
   setUpAll(() async {
-    await PrintService.instance.start('t123', 'FakePrinter', dailyQuota: 10);
+    await PrintService.instance.start('t123', 'FakePrinter', dailyQuota: 10, port: 0);
   });
 
   tearDownAll(() async {

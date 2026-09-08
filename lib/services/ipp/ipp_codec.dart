@@ -17,8 +17,8 @@ const int kTagCharset = 0x47;
 const int kTagNaturalLang = 0x48;
 const int kTagMimeMediaType = 0x49;
 
-// 属性组分隔 tag
-const int kTagEnd = 0x00;
+// 属性组分隔 tag（RFC 8010：end-of-attributes-tag = 0x03，0x00 保留）
+const int kTagEnd = 0x03;
 const int kTagOperation = 0x01;
 const int kTagJob = 0x02;
 const int kTagPrinter = 0x04;
@@ -127,7 +127,12 @@ class IppMessage {
           _u16(b, nameBytes.length);
           b.add(nameBytes);
           final v = _encodeValue(a.values[i], a.tag);
-          _u32(b, v.length);
+          // RFC 8010 §3.1：value-length 在 1.0 为 16 位，1.1+ 为 32 位
+          if (versionMajor == 1 && versionMinor == 0) {
+            _u16(b, v.length);
+          } else {
+            _u32(b, v.length);
+          }
           b.add(v);
         }
       }
@@ -137,8 +142,9 @@ class IppMessage {
   }
 
   static Uint8List buildResponse(int requestId, int statusCode,
-      {List<IppGroup>? groups}) {
-    final m = IppMessage(1, 1, statusCode, requestId, groups ?? []);
+      {List<IppGroup>? groups, int versionMajor = 1, int versionMinor = 1}) {
+    final m = IppMessage(
+        versionMajor, versionMinor, statusCode, requestId, groups ?? []);
     return m.encode();
   }
 
@@ -217,7 +223,7 @@ class _Reader {
   IppAttr? lastAttr;
 
   int? groupTag = r.u8();
-  while (groupTag != null && groupTag != kTagEnd) {
+  while (groupTag != null && groupTag != kTagEnd && groupTag != 0x00) {
     if (groupTag <= 0x0F) {
       // 新属性组
       cur = IppGroup(groupTag, []);
@@ -229,7 +235,8 @@ class _Reader {
     final valueTag = groupTag;
     final nameLen = r.u16();
     final nameBytes = r.bytes(nameLen);
-    final valLen = r.u32(); // RFC 8010：value-length 为 32 位
+    // RFC 8010 §3.1：1.0 报文 value-length 为 16 位，1.1+ 为 32 位
+    final valLen = (vm == 1 && vn == 0) ? r.u16() : r.u32();
     final valBytes = r.bytes(valLen);
     final name = utf8.decode(nameBytes, allowMalformed: true);
     final value = _decodeValue(valueTag, valBytes);
