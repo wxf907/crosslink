@@ -103,7 +103,6 @@ class _PrintServicePageState extends State<PrintServicePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (!s.printEnabled) _connectCard(),
           Card(
             child: SwitchListTile(
               secondary: const Icon(Icons.print_outlined),
@@ -153,7 +152,10 @@ class _PrintServicePageState extends State<PrintServicePage> {
                         children: [
                           if (_caps.duplex) const _Chip('自动双面'),
                           if (_caps.color) const _Chip('彩色'),
-                          _Chip('纸张 ${_caps.papers.length} 种'),
+                          if (_caps.papers.isEmpty)
+                            const _Chip('默认 A4')
+                          else
+                            _Chip('纸张 ${_caps.papers.length} 种'),
                           _Chip('单次最多 ${_caps.maxCopies.clamp(0, 99)} 份'),
                         ],
                       ),
@@ -224,6 +226,8 @@ class _PrintServicePageState extends State<PrintServicePage> {
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
                 builder: (_) => const PrintJobsPage())),
           ),
+          const SizedBox(height: 8),
+          _connectCard(),
         ],
       ),
     );
