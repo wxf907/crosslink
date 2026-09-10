@@ -1,7 +1,0 @@
-# spike 构建产物与第三方二进制（pdfium 来源见 printspike.cpp 头注释）
-*.exe
-*.obj
-*.dll
-*.bmp
-*.txt
-*.pdf

@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants.dart';
-import '../../services/printing/print_service.dart';
 import '../../state/app_state.dart';
 import '../contact_author.dart';
 import '../print_service_page.dart';
@@ -220,10 +219,11 @@ class PrintEntryButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
-    final svc = PrintService.instance;
-    final color = !app.settings.printEnabled
-        ? Colors.grey
-        : (svc.running && !svc.paused ? Colors.green : Colors.orange);
+    // 状态灯反映"打印机已对外共享"（SMB 为主，IPP 开启也算），
+    // 而非旧的 IPP 开关——否则 IPP 默认关闭时灯永远灰，误导用户
+    final color = (app.smbShared || app.settings.printEnabled)
+        ? Colors.green
+        : Colors.grey;
     return TextButton(
       onPressed: () => Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => const PrintServicePage()),

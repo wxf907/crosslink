@@ -304,6 +304,27 @@ void HandleListPrinters(
   result->Success(flutter::EncodableValue(std::move(list)));
 }
 
+// 打印机是否离线（含 WORK_OFFLINE 属性与离线/不可用状态位）。
+// 用于能力查询前的预检：对离线网络打印机调 DeviceCapabilitiesW
+// 会触发驱动去连接设备，Windows 弹"等待连接"对话框并长时间阻塞。
+static bool IsPrinterOffline(const std::wstring& name) {
+  HANDLE h = nullptr;
+  if (!OpenPrinterW((LPWSTR)name.c_str(), &h, nullptr)) return true;
+  DWORD needed = 0;
+  GetPrinterW(h, 2, nullptr, 0, &needed);
+  std::vector<BYTE> buf(needed);
+  bool offline = false;
+  if (GetPrinterW(h, 2, buf.data(), needed, &needed)) {
+    auto* pi = reinterpret_cast<PRINTER_INFO_2W*>(buf.data());
+    if (pi->Attributes & PRINTER_ATTRIBUTE_WORK_OFFLINE) offline = true;
+    if (pi->Status & (PRINTER_STATUS_OFFLINE | PRINTER_STATUS_NOT_AVAILABLE |
+                      PRINTER_STATUS_ERROR))
+      offline = true;
+  }
+  ClosePrinter(h);
+  return offline;
+}
+
 void HandlePrinterCaps(
     const flutter::EncodableValue* args,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
@@ -313,6 +334,18 @@ void HandlePrinterCaps(
     return;
   }
   std::wstring name = Utf8ToWide(GetStrArg(*map, "name"));
+  // 离线预检：直接返回默认能力，避免驱动连接弹窗与阻塞
+  if (IsPrinterOffline(name)) {
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("duplex")] = flutter::EncodableValue(false);
+    out[flutter::EncodableValue("color")] = flutter::EncodableValue(false);
+    out[flutter::EncodableValue("maxCopies")] =
+        flutter::EncodableValue((int32_t)1);
+    out[flutter::EncodableValue("papers")] =
+        flutter::EncodableValue(flutter::EncodableList());
+    result->Success(flutter::EncodableValue(std::move(out)));
+    return;
+  }
   std::wstring port = GetPrinterPortName(name);
   flutter::EncodableMap out;
   out[flutter::EncodableValue("duplex")] =

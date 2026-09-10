@@ -37,6 +37,16 @@ void _ensureSingleInstance() {
   final showWindow = user32.lookupFunction<
       Int32 Function(IntPtr, Int32),
       int Function(int, int)>('ShowWindow');
+  // 硬终止原语：TerminateProcess 不执行析构与 DLL 卸载，物理上无法卡死。
+  // 关键修复：此前第二实例用 exit(0) 退出，会在引擎启动早期触发 DLL
+  // 卸载死锁，进程变成无法结束的僵尸（taskkill/Stop-Process 均无效），
+  // 且僵尸持有本互斥锁不放，导致此后所有启动全部连锁变僵尸。
+  final getCurrentProcess = kernel32.lookupFunction<
+      IntPtr Function(),
+      int Function()>('GetCurrentProcess');
+  final terminateProcess = kernel32.lookupFunction<
+      Int32 Function(IntPtr, Uint32),
+      int Function(int, int)>('TerminateProcess');
 
   const swRestore = 9;
   const errorAlreadyExists = 183;
@@ -45,15 +55,18 @@ void _ensureSingleInstance() {
   createMutex(0, 0, mutexName);
 
   if (getLastError() == errorAlreadyExists) {
-    // 尝试找到已有窗口并提到前台
+    // 尝试找到已有窗口并提到前台：先按标题找（标题由 Dart 侧设置），
+    // 找不到再按窗口类找（实例尚在启动早期或已挂起时标题未设置）
     final windowTitle = 'CrossLink 跨端互传'.toNativeUtf16();
-    final hwnd =
-        findWindow(Pointer<Utf16>.fromAddress(0), windowTitle);
+    final windowClass = 'FLUTTER_RUNNER_WIN32_WINDOW'.toNativeUtf16();
+    final nullPtr = Pointer<Utf16>.fromAddress(0);
+    var hwnd = findWindow(nullPtr, windowTitle);
+    if (hwnd == 0) hwnd = findWindow(windowClass, nullPtr);
     if (hwnd != 0) {
       showWindow(hwnd, swRestore);
       setForegroundWindow(hwnd);
     }
-    exit(0);
+    terminateProcess(getCurrentProcess(), 0);
   }
 }
 

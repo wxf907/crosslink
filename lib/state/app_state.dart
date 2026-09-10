@@ -14,6 +14,7 @@ import '../net/lan_transport.dart';
 import '../net/transport.dart';
 import '../services/android_public_store.dart';
 import '../services/identity_service.dart';
+import '../services/print_share_service.dart';
 import '../services/printing/print_service.dart';
 import '../services/print_engine.dart';
 import '../services/storage_service.dart';
@@ -64,6 +65,11 @@ class AppState extends ChangeNotifier {
   /// UI 提示回调（弹窗/SnackBar）
   void Function(String message)? onNotice;
 
+  /// Windows 原生打印共享（SMB）是否已建立。
+  /// 内存态缓存：由打印服务页加载/启用成功后写入，首页状态灯消费，
+  /// 避免首页每次都起 PowerShell 查询。真实状态以打印页进入时的查询为准。
+  bool smbShared = false;
+
   bool get loggedIn => identity != null;
 
   // ---------------- 初始化 ----------------
@@ -87,6 +93,13 @@ class AppState extends ChangeNotifier {
     }
     // 打印服务独立于登录态：开机进托盘后即可对外可用
     await syncPrintService();
+    // 启动时探测一次 SMB 共享状态：首页打印灯据此显示，
+    // 否则 smbShared 只在用户进过打印服务页后才被刷新，重启后灯恒灰
+    if (Platform.isWindows) {
+      try {
+        smbShared = await PrintShareService.isShared();
+      } catch (_) {}
+    }
     notifyListeners();
   }
 
