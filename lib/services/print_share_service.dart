@@ -3,7 +3,7 @@ import 'dart:math';
 
 import '../core/logger.dart';
 
-/// Windows 原生 SMB 打印共享的自动化封装（2.3.3）。
+/// Windows 原生 SMB 打印共享的自动化封装（2.4.0）。
 ///
 /// 为什么走 SMB 而不是 IPP：Win10 的 IPP 客户端（IPrint/CIM）对自建 IPP 服务器
 /// 支持残缺（Add-Printer 不支持 IPP URL、向导类安装器校验苛刻），而 SMB 打印共享
@@ -21,9 +21,10 @@ class PrintShareService {
   static String get _resultPath =>
       '${Directory.systemTemp.path}${Platform.pathSeparator}$_resultFile';
 
-  /// 生成连接串：\\IP\共享名 账户 密码（同事端粘贴即用）
+  /// 生成连接串：\\IP\共享名 主机\账户 密码（同事端粘贴即用）。
+  /// 使用主机限定账户名，避免 Windows 把 clprint 解析成本机/域账户。
   static String buildSpec(String hostIp, String password) =>
-      '\\\\$hostIp\\$shareName $accountName $password';
+      '\\\\$hostIp\\$shareName $hostIp\\$accountName $password';
 
   /// 12 位随机密码（去掉易混字符）
   static String newSharePassword() {
@@ -37,12 +38,13 @@ class PrintShareService {
   /// 提权执行共享配置；返回 (成功, 结果文本)
   static Future<(bool, String)> enableShare(String printer, String password) async {
     if (!Platform.isWindows) return (false, '仅 Windows 支持');
+    String psQuote(String value) => value.replaceAll("'", "''");
     final script = '''
 \$ErrorActionPreference = 'Continue'
 \$log = '${_resultPath.replaceAll('\\', '\\\\')}'
 "=== \$(Get-Date -Format 'HH:mm:ss') ===" | Set-Content \$log
-\$printer = '$printer'
-\$pass = '$password'
+\$printer = '${psQuote(printer)}'
+\$pass = '${psQuote(password)}'
 # 1) 专用本地账户（存在则改密码）
 \$u = net user $accountName \$pass /add /passwordchg:no /comment:"CrossLink print-only" 2>&1
 "account add: \$u" | Add-Content \$log
@@ -73,10 +75,14 @@ try {
 } catch { "secedit skip: \$_" | Add-Content \$log }
 # 3) 共享打印机
 \$s = rundll32 printui.dll,PrintUIEntry /Xs /n "\$printer" ShareName=$shareName 2>&1
-"share: \$s exit \$LASTEXITCODE" | Add-Content \$log
+\$shareExit = \$LASTEXITCODE
+"share: \$s exit \$shareExit" | Add-Content \$log
+if (\$shareExit -ne 0) { throw "打印机共享失败（exit=\$shareExit）：\$s" }
 # 4) 启用"文件和打印机共享"防火墙组
 \$f = netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=yes 2>&1
-"fw: \$f exit \$LASTEXITCODE" | Add-Content \$log
+\$fwExit = \$LASTEXITCODE
+"fw: \$f exit \$fwExit" | Add-Content \$log
+if (\$fwExit -ne 0) { throw "防火墙放行失败（exit=\$fwExit）：\$f" }
 "done" | Add-Content \$log
 ''';
     final ps = File('${Directory.systemTemp.path}${Platform.pathSeparator}cl_share_setup.ps1');
@@ -127,22 +133,31 @@ try {
       return (false, '格式应为：\\\\IP\\共享名 账户 密码');
     }
     final unc = parts[0];
-    final user = parts[1];
+    final rawUser = parts[1];
     final pass = parts[2];
     final host = unc.substring(2).split('\\').first;
+    // 本机账户必须明确绑定到共享主机，否则 Windows 可能按当前域/本机解析。
+    final user = rawUser.contains('\\') ? rawUser : '$host\\$rawUser';
     final k = await Process.run(
         'cmdkey', ['/add:$host', '/user:$user', '/pass:$pass']);
     if (k.exitCode != 0) {
       return (false, '凭据写入失败：${k.stderr}');
     }
+    // WScript.Network 在部分 Win10 版本只返回通用 COM 错误；保留
+    // PrintUIEntry 作为同机的原生回退，避免“凭据已写入但打印机未添加”。
     final w = await Process.run('powershell', [
       '-NoProfile', '-Command',
       "(New-Object -ComObject WScript.Network).AddPrinterConnection('$unc')"
     ]);
     if (w.exitCode != 0) {
-      await Process.run('cmdkey', ['/delete:$host']);
-      final err = '${w.stderr}'.trim();
-      return (false, err.isEmpty ? '添加失败（网络不通或共享名错误）' : err);
+      final p = await Process.run('rundll32', [
+        'printui.dll,PrintUIEntry', '/in', '/n', unc
+      ]);
+      if (p.exitCode != 0) {
+        await Process.run('cmdkey', ['/delete:$host']);
+        final err = '${w.stderr} ${p.stderr}'.trim();
+        return (false, err.isEmpty ? '添加失败（网络不通、权限或共享名错误）' : err);
+      }
     }
     return (true, '');
   }

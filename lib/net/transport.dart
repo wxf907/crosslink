@@ -31,6 +31,10 @@ class TransportCallbacks {
   /// 文件传输失败
   final void Function(String taskId, String reason) onFileError;
 
+  /// 收到 CrossLink 内部打印任务邀约。
+  final void Function(RemoteDevice from, String taskId, String name, int size,
+      Map<String, dynamic> options)? onPrintJobOffer;
+
   /// 扫码登录：收到授权凭证（本设备被手机授权登录）
   final void Function(Identity granted) onLoginGranted;
 
@@ -47,6 +51,7 @@ class TransportCallbacks {
     required this.onFileError,
     required this.onLoginGranted,
     this.onAvatarSync,
+    this.onPrintJobOffer,
   });
 }
 
@@ -75,6 +80,17 @@ abstract class MessageTransport {
     String filePath,
     String fileName,
     int size, {
+    required void Function(int sent, int total) onProgress,
+  });
+
+  /// 发送内部打印任务（沿用文件分块通道）。
+  Future<void> sendPrintJob(
+    RemoteDevice to,
+    String taskId,
+    String filePath,
+    String fileName,
+    int size, {
+    required Map<String, dynamic> options,
     required void Function(int sent, int total) onProgress,
   });
 

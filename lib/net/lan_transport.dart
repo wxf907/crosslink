@@ -946,7 +946,15 @@ class LanTransport implements MessageTransport {
         final name = frame.header['name'] as String? ?? 'file';
         final size = (frame.header['size'] as int?) ?? 0;
         _beginRecvFile(taskId, name, size);
-        _cb?.onFileOffer(peer, taskId, name, size);
+        if (frame.header['print'] == true) {
+          final raw = frame.header['options'];
+          final options = raw is Map
+              ? Map<String, dynamic>.from(raw)
+              : <String, dynamic>{};
+          _cb?.onPrintJobOffer?.call(peer, taskId, name, size, options);
+        } else {
+          _cb?.onFileOffer(peer, taskId, name, size);
+        }
         break;
 
       case FrameType.fileChunk:
@@ -1228,6 +1236,61 @@ class LanTransport implements MessageTransport {
       rethrow;
     } finally {
       _pendingAcks.remove(taskId);
+    }
+  }
+
+  @override
+  Future<void> sendPrintJob(
+    RemoteDevice to,
+    String taskId,
+    String filePath,
+    String fileName,
+    int size, {
+    required Map<String, dynamic> options,
+    required void Function(int sent, int total) onProgress,
+  }) async {
+    Socket? socket;
+    try {
+      socket = await _tempSocket(to);
+      _sendFrame(socket, Frame({
+        'type': FrameType.fileOffer,
+        'id': taskId,
+        'name': fileName,
+        'size': size,
+        'print': true,
+        'options': options,
+      }));
+      final ack = Completer<void>();
+      _pendingAcks[taskId] = _PendingAck(ack, socket);
+      var sent = 0;
+      final raf = await File(filePath).open();
+      try {
+        while (sent < size) {
+          final n = (size - sent) < AppConst.fileChunkSize
+              ? (size - sent)
+              : AppConst.fileChunkSize;
+          final chunk = await raf.read(n);
+          if (chunk.isEmpty) break;
+          _sendFrame(socket, Frame({
+            'type': FrameType.fileChunk,
+            'id': taskId,
+            'bodyLen': chunk.length,
+          }, chunk));
+          sent += chunk.length;
+          onProgress(sent, size);
+        }
+      } finally {
+        await raf.close();
+      }
+      _sendFrame(socket, Frame({'type': FrameType.fileEnd, 'id': taskId}));
+      await socket.flush();
+      await ack.future.timeout(Duration(milliseconds: 15000 + size ~/ 200));
+    } finally {
+      _pendingAcks.remove(taskId);
+      try {
+        await socket?.close();
+      } catch (_) {}
+      socket?.destroy();
     }
   }
 

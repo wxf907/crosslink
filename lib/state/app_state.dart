@@ -15,6 +15,7 @@ import '../net/transport.dart';
 import '../services/android_public_store.dart';
 import '../services/identity_service.dart';
 import '../services/printing/print_service.dart';
+import '../services/print_engine.dart';
 import '../services/storage_service.dart';
 
 /// 设备在列表中的展示视图（合并在线设备 + 历史会话）
@@ -52,6 +53,7 @@ class AppState extends ChangeNotifier {
 
   /// 传输任务：taskId -> task
   final Map<String, TransferTask> transfers = {};
+  final Map<String, Map<String, dynamic>> _incomingPrintJobs = {};
 
   /// 当前活动会话对端 id
   String? activePeerId;
@@ -193,6 +195,7 @@ class AppState extends ChangeNotifier {
         onFileProgress: _onFileProgress,
         onFileDone: _onFileDone,
         onFileError: _onFileError,
+        onPrintJobOffer: _onPrintJobOffer,
         onLoginGranted: (id) => applyGrantedIdentity(id),
         onAvatarSync: _onPeerAvatar,
       );
@@ -260,6 +263,8 @@ class AppState extends ChangeNotifier {
     });
     return list;
   }
+
+  RemoteDevice? deviceById(String id) => _online[id];
 
   RemoteDevice? onlineDevice(String id) => _online[id];
 
@@ -476,6 +481,47 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 发送内部打印任务；对端收到后自动调用已配置的本机打印机。
+  Future<void> sendPrintJob(RemoteDevice to, String filePath,
+      {int copies = 1,
+      String pages = '',
+      String duplex = '',
+      bool color = false,
+      int paperCode = 0}) async {
+    final file = File(filePath);
+    if (!await file.exists()) throw StateError('文件不存在');
+    final size = await file.length();
+    final taskId = _uuid.v4();
+    final task = TransferTask(
+      taskId: taskId,
+      peerId: to.deviceId,
+      fileName: p.basename(filePath),
+      totalBytes: size,
+      outgoing: true,
+      path: filePath,
+      messageId: '',
+      state: TransferState.transferring,
+    );
+    transfers[taskId] = task;
+    notifyListeners();
+    try {
+      await _transport.sendPrintJob(to, taskId, filePath, task.fileName,
+          size, options: {
+            'copies': copies.clamp(1, 99),
+            'pages': pages,
+            'duplex': duplex,
+            'color': color,
+            'paperCode': paperCode,
+          }, onProgress: (sent, _) => _bumpProgress(task, sent));
+      task.state = TransferState.completed;
+    } catch (_) {
+      task.state = TransferState.failed;
+      rethrow;
+    } finally {
+      notifyListeners();
+    }
+  }
+
   /// 失败重发
   Future<void> retryMessage(ChatMessage m) async {
     final d = _online[m.peerId];
@@ -588,6 +634,24 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onPrintJobOffer(RemoteDevice from, String taskId, String name, int size,
+      Map<String, dynamic> options) {
+    _touchPeer(from);
+    _incomingPrintJobs[taskId] = options;
+    transfers[taskId] = TransferTask(
+      taskId: taskId,
+      peerId: from.deviceId,
+      fileName: name,
+      totalBytes: size,
+      outgoing: false,
+      path: '',
+      messageId: '',
+      state: TransferState.transferring,
+    );
+    onNotice?.call('${from.name} 发来打印任务，接收后自动打印');
+    notifyListeners();
+  }
+
   void _onFileProgress(String taskId, int received, int total) {
     final t = transfers[taskId];
     if (t == null) return;
@@ -597,6 +661,33 @@ class AppState extends ChangeNotifier {
   Future<void> _onFileDone(String taskId, String savePath) async {
     final t = transfers[taskId];
     if (t == null) return;
+    final printOptions = _incomingPrintJobs.remove(taskId);
+    if (printOptions != null) {
+      t.state = TransferState.completed;
+      t.transferredBytes = t.totalBytes;
+      final printer = settings.printPrinter;
+      if (!PrintEngine.supported || printer.isEmpty) {
+        onNotice?.call('未配置可用打印机，打印任务未输出');
+        return;
+      }
+      try {
+        await PrintEngine.instance.ensureHandler();
+        final accepted = await PrintEngine.instance.printPdf(
+          path: savePath,
+          printer: printer,
+          jobId: DateTime.now().millisecondsSinceEpoch,
+          copies: (printOptions['copies'] as int?) ?? 1,
+          pages: printOptions['pages'] as String? ?? '',
+          duplex: printOptions['duplex'] as String? ?? '',
+          color: printOptions['color'] as bool? ?? false,
+          paperCode: (printOptions['paperCode'] as int?) ?? 0,
+        );
+        if (!accepted) onNotice?.call('打印任务未能提交');
+      } catch (e) {
+        onNotice?.call('自动打印失败：$e');
+      }
+      return;
+    }
     t.state = TransferState.completed;
     t.transferredBytes = t.totalBytes;
     // 安卓：把文件从应用目录发布到公共「下载/CrossLink」（零权限），

@@ -85,4 +85,5 @@ class FrameType {
   static const msgAck = 'msg_ack';
   // V2 头像同步：携带头像图片字节与时间戳，较新者胜出
   static const avatar = 'avatar';
+  static const printOffer = 'print_offer';
 }

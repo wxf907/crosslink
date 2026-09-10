@@ -145,6 +145,7 @@ class MessageBubble extends StatelessWidget {
         PopupMenuItem(value: 'open', child: Text('打开文件')),
         PopupMenuItem(value: 'locate', child: Text('打开所在位置')),
         PopupMenuItem(value: 'copy', child: Text('复制文件路径')),
+        PopupMenuItem(value: 'printRemote', child: Text('发送到对方打印机')),
       ],
     );
     if (!context.mounted) return;
@@ -186,6 +187,14 @@ class MessageBubble extends StatelessWidget {
                   style: TextStyle(fontSize: 12, color: Colors.black54)),
               onTap: () => Navigator.pop(context, 'share'),
             ),
+            if (Platform.isWindows)
+              ListTile(
+                leading: const Icon(Icons.print_outlined),
+                title: const Text('发送到对方打印机'),
+                subtitle: const Text('对方电脑自动打印 PDF',
+                    style: TextStyle(fontSize: 12, color: Colors.black54)),
+                onTap: () => Navigator.pop(context, 'printRemote'),
+              ),
             ListTile(
               leading: const Icon(Icons.drive_folder_upload),
               title: const Text('另存到其他位置'),
@@ -232,6 +241,31 @@ class MessageBubble extends StatelessWidget {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('分享失败：$e')));
+          }
+        }
+        break;
+      case 'printRemote':
+        if (!Platform.isWindows || !path.toLowerCase().endsWith('.pdf')) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('目前仅支持在 Windows 上发送 PDF 打印任务')));
+          break;
+        }
+        final peer = context.read<AppState>().deviceById(msg.peerId);
+        if (peer == null || !peer.online) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('对方设备不在线')));
+          break;
+        }
+        try {
+          await context.read<AppState>().sendPrintJob(peer, path);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('打印任务已发送，对方将自动打印')));
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text('打印任务发送失败：$e')));
           }
         }
         break;
