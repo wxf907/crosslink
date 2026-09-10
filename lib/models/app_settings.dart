@@ -15,6 +15,10 @@ class AppSettings {
   /// 桌面端：截图快捷键（hotkey_manager 的 HotKey JSON 序列化），空用默认 Alt+A
   String? screenshotHotkey;
 
+  /// 桌面端：截图时是否先隐藏本窗口。
+  /// 默认开启（截软件外部内容）；截本软件自身截图反馈问题时关闭。
+  bool screenshotHideWindow;
+
   /// 安卓端：后台保持在线（前台服务保活），默认开启——
   /// 锁屏/切后台后系统会冻结应用导致“假在线”，保活可避免
   bool backgroundOnline;
@@ -54,6 +58,7 @@ class AppSettings {
     this.autoOnline = true,
     this.enterToSend = true,
     this.screenshotHotkey,
+    this.screenshotHideWindow = true,
     this.backgroundOnline = true,
     this.imagePreview = true,
     this.themeColor,
@@ -72,6 +77,7 @@ class AppSettings {
         'autoOnline': autoOnline,
         'enterToSend': enterToSend,
         'screenshotHotkey': screenshotHotkey,
+        'screenshotHideWindow': screenshotHideWindow,
         'backgroundOnline': backgroundOnline,
         'imagePreview': imagePreview,
         'themeColor': themeColor,
@@ -90,6 +96,7 @@ class AppSettings {
         autoOnline: j['autoOnline'] as bool? ?? true,
         enterToSend: j['enterToSend'] as bool? ?? true,
         screenshotHotkey: j['screenshotHotkey'] as String?,
+        screenshotHideWindow: j['screenshotHideWindow'] as bool? ?? true,
         backgroundOnline: j['backgroundOnline'] as bool? ?? true,
         imagePreview: j['imagePreview'] as bool? ?? true,
         themeColor: j['themeColor'] as int?,

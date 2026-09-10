@@ -804,6 +804,13 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 截图时是否隐藏本窗口（截自身截图反馈问题时关闭）
+  Future<void> setScreenshotHideWindow(bool v) async {
+    settings.screenshotHideWindow = v;
+    await storage.saveSettings(settings);
+    notifyListeners();
+  }
+
   Future<void> setScreenshotHotkey(String? json) async {
     settings.screenshotHotkey = json;
     await storage.saveSettings(settings);

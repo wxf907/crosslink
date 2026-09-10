@@ -118,6 +118,26 @@ class SettingsPage extends StatelessWidget {
                 builder: (_) => const HotkeySettingsPage(),
               )),
             ),
+            ListTile(
+              leading: const Icon(Icons.visibility_outlined),
+              title: const Text('截图时隐藏本窗口'),
+              subtitle: Text(app.settings.screenshotHideWindow
+                  ? '截软件外部内容（当前：隐藏）'
+                  : '截 CrossLink 自身画面，如反馈问题（当前：保留）'),
+              trailing: DropdownButton<bool>(
+                value: app.settings.screenshotHideWindow,
+                underline: const SizedBox.shrink(),
+                items: const [
+                  DropdownMenuItem(
+                      value: true, child: Text('隐藏窗口')),
+                  DropdownMenuItem(
+                      value: false, child: Text('保留窗口')),
+                ],
+                onChanged: (v) {
+                  if (v != null) app.setScreenshotHideWindow(v);
+                },
+              ),
+            ),
             if (Platform.isWindows)
               ListTile(
                 leading: const Icon(Icons.local_fire_department_outlined),
@@ -225,7 +245,7 @@ class SettingsPage extends StatelessWidget {
           const Center(
             child: Padding(
               padding: EdgeInsets.all(12),
-              child: Text('CrossLink v2.4.0',
+              child: Text('CrossLink v2.5.0',
                   style: TextStyle(color: Colors.black38, fontSize: 12)),
             ),
           ),

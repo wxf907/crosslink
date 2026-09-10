@@ -16,8 +16,6 @@ import 'print_jobs_page.dart';
 
 /// 页面角色：主机端（共享我的打印机）/ 同事端（连接别人的打印机）。
 /// 打印服务的两类功能面向两种身份，分流后每屏只有一个主操作。
-enum _Role { host, client }
-
 /// 主机端「打印服务」设置页（仅 Windows 入口）。
 class PrintServicePage extends StatefulWidget {
   const PrintServicePage({super.key});
@@ -33,7 +31,6 @@ class _PrintServicePageState extends State<PrintServicePage> {
   PrintState _state = PrintState.offline;
   String _localIp = '';
   Timer? _poll;
-  _Role _role = _Role.host;
 
   /// 首次加载完成前显示"检测中"，避免先闪一下灰色误导
   bool _loaded = false;
@@ -75,6 +72,8 @@ class _PrintServicePageState extends State<PrintServicePage> {
       _sharedName = await PrintShareService.sharedPrinter();
       // 同步到全局状态：首页打印灯由此驱动
       _app.smbShared = _shared;
+      // 角色自动判定（用户没手动切换过时）：
+      // 本机开着共享 → 主机；否则若装过他人 CrossLinkPrint 共享或 UNC 端口
       if (mounted) setState(() => _loaded = true);
     } catch (_) {
       if (mounted) setState(() => _loaded = true);
@@ -121,8 +120,15 @@ class _PrintServicePageState extends State<PrintServicePage> {
       if (online == false) {
         state = PrintState.offline;
       } else if (online == true && state == PrintState.offline) {
-        state = PrintState.ready; // spooler 缓存了过期的离线标记
+        // 仅网络端口探测明确在线时，才纠正 spooler 的过期离线标记
+        state = PrintState.ready;
       }
+      // USB 等本地端口（探测返回 null）：完全信任 spooler 状态位。
+      // 曾经尝试"从离线回绿需要额外证据"的压制策略，但实践中把正常的
+      // USB 打印机也压成永久离线（WPS 可打、本软件显示离线），且重进页面
+      // 也无法复位——错误显示离线阻断使用的危害，远大于拔线后短暂误报
+      // 就绪（后者发送任务时会立即暴露真实状态）。故回退为信任 spooler，
+      // 与 WPS 等常规软件行为一致。
       if (!mounted) return;
       setState(() => _state = state);
 
@@ -153,39 +159,26 @@ class _PrintServicePageState extends State<PrintServicePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          SegmentedButton<_Role>(
-            segments: const [
-              ButtonSegment(
-                value: _Role.host,
-                icon: Icon(Icons.hub_outlined),
-                label: Text('共享我的打印机'),
-              ),
-              ButtonSegment(
-                value: _Role.client,
-                icon: Icon(Icons.print_outlined),
-                label: Text('连接同事的'),
-              ),
-            ],
-            selected: {_role},
-            onSelectionChanged: (v) => setState(() => _role = v.first),
-          ),
+          _shareSection(),
           const SizedBox(height: 12),
-          if (_role == _Role.host) ..._hostView(),
-          if (_role == _Role.client) _connectCard(),
+          _connectSection(),
         ],
       ),
     );
   }
 
-  /// 主机端视图：一张主卡（选打印机+共享状态+连接串）+ 两个功能行 + 折叠的 IPP。
-  List<Widget> _hostView() {
+  /// 共享区（主机视角）：共享主卡 + 配额/任务监控 + 高级 IPP。
+  /// 「共享」与「连接」是两件独立的事，不再互斥切换——
+  /// 一台电脑可以同时共享自己的打印机并连接别人的。
+  Widget _shareSection() {
     final s = context.watch<AppState>().settings;
-    return [
-      _hostMainCard(),
-      const SizedBox(height: 12),
-      Card(
-        child: Column(
-          children: [
+    return Column(
+      children: [
+        _hostMainCard(),
+        const SizedBox(height: 12),
+        Card(
+          child: Column(
+            children: [
             ListTile(
               leading: const Icon(Icons.tag_outlined),
               title: const Text('每日打印页数配额'),
@@ -205,9 +198,91 @@ class _PrintServicePageState extends State<PrintServicePage> {
             ),
           ],
         ),
+        ),
+        _advancedCard(),
+      ],
+    );
+  }
+
+  /// 连接区（接入视角）：粘贴连接串一键安装 + 已连接的共享打印机列表。
+  /// 独立于共享区——接入方打开页面首先看到自己连了谁，而不是主机面板。
+  Widget _connectSection() {
+    // 已接入的共享打印机：UNC 端口或网络打印机（排除本机物理口）
+    final remotePrinters = _printers
+        .where((p) =>
+            p.port.startsWith(r'\\') ||
+            p.network ||
+            p.name.contains('CrossLinkPrint'))
+        .toList(growable: false);
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: true,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          title: const Text('连接同事的打印机',
+              style: TextStyle(fontSize: 15)),
+          subtitle: Text(
+            remotePrinters.isEmpty
+                ? '未连接——粘贴对方给的连接串安装'
+                : '已连接 ${remotePrinters.length} 台：'
+                    '${remotePrinters.map((p) => p.name).join('、')}',
+            style: TextStyle(
+                fontSize: 11,
+                color: remotePrinters.isEmpty
+                    ? Colors.black45
+                    : Colors.green.shade700),
+          ),
+          trailing: remotePrinters.isEmpty
+              ? null
+              : Chip(
+                  label: const Text('已连接',
+                      style: TextStyle(fontSize: 10)),
+                  backgroundColor: Colors.green.shade100,
+                  visualDensity: VisualDensity.compact,
+                ),
+          children: [
+            _connectForm(),
+          ],
+        ),
       ),
-      _advancedCard(),
-    ];
+    );
+  }
+
+  /// 连接表单（原 _connectCard 内容，去掉外层卡片）
+  Widget _connectForm() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('粘贴对方发给你的连接串，点「一键安装」添加为系统打印机，'
+            '之后任何软件都能直接打印。',
+            style: TextStyle(fontSize: 12, color: Colors.black54)),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _urlCtrl,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            hintText: r'\\IP\共享名 账户 密码',
+          ),
+        ),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FilledButton.icon(
+            icon: const Icon(Icons.download_outlined, size: 18),
+            label: const Text('一键安装'),
+            onPressed: _installPrinter,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text('也支持 IPP 地址（http://IP:631/printers/令牌）。\n'
+            '若弹出"输入 Windows 凭据"：用户名随意填，密码填对方给的接入令牌。',
+            style: TextStyle(fontSize: 11, color: Colors.black45)),
+      ],
+    );
   }
 
   /// 主机端主卡：Windows 原生共享（SMB）——共享状态、打印机选择、连接串。
@@ -595,54 +670,6 @@ class _PrintServicePageState extends State<PrintServicePage> {
       };
 
   final _urlCtrl = TextEditingController();
-
-  /// 同事端视图：粘贴连接串，一键添加为系统打印机。
-  Widget _connectCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.print_outlined,
-                    color: Theme.of(context).colorScheme.primary),
-                const SizedBox(width: 8),
-                Text('连接共享打印机',
-                    style: Theme.of(context).textTheme.titleMedium),
-              ],
-            ),
-            const SizedBox(height: 6),
-            const Text('粘贴对方发给你的连接串，点「一键安装」添加为系统打印机，'
-                '之后任何软件都能直接打印。',
-                style: TextStyle(fontSize: 12, color: Colors.black54)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _urlCtrl,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: r'\\IP\共享名 账户 密码',
-              ),
-            ),
-            const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                icon: const Icon(Icons.download_outlined, size: 18),
-                label: const Text('一键安装'),
-                onPressed: _installPrinter,
-              ),
-            ),
-            const SizedBox(height: 6),
-            const Text('也支持 IPP 地址（http://IP:631/printers/令牌）。\n'
-                '若弹出"输入 Windows 凭据"：用户名随意填，密码填对方给的接入令牌。',
-                style: TextStyle(fontSize: 11, color: Colors.black45)),
-          ],
-        ),
-      ),
-    );
-  }
 
   static final _urlRe = RegExp(r'^http://[A-Za-z0-9.\-_:]+(:\d+)?(/[A-Za-z0-9\-_./]*)*$');
 

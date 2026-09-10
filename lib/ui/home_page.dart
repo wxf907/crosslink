@@ -134,15 +134,21 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// 全局快捷键触发：截图并发送到当前会话/所选设备
+  /// 同样尊重「截图时隐藏窗口」设置（截本软件自身时窗口保留）
   Future<void> _onScreenshotHotkey() async {
-    try {
-      await windowManager.minimize();
-      await Future.delayed(const Duration(milliseconds: 250));
-    } catch (_) {}
+    final hide = _app.settings.screenshotHideWindow;
+    if (hide) {
+      try {
+        await windowManager.minimize();
+        await Future.delayed(const Duration(milliseconds: 250));
+      } catch (_) {}
+    }
     final bytes = await ScreenshotService.instance.captureRegion();
-    try {
-      await windowManager.restore();
-    } catch (_) {}
+    if (hide) {
+      try {
+        await windowManager.restore();
+      } catch (_) {}
+    }
     if (bytes != null) {
       await _app.sendImageBytes(bytes,
           name: 'shot_${DateTime.now().millisecondsSinceEpoch}.png');

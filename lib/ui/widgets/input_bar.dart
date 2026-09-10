@@ -208,18 +208,24 @@ class _InputBarState extends State<InputBar> {
     }
   }
 
-  /// 桌面端内置截图并发送
+  /// 桌面端内置截图并发送。
+  /// 按设置决定是否先隐藏本窗口：截外部内容时隐藏避免遮挡；
+  /// 要截本软件自身（反馈问题）时保留窗口。
   Future<void> _screenshot() async {
     final app = context.read<AppState>();
-    // 先最小化本窗口，避免遮挡截图区域
-    try {
-      await windowManager.minimize();
-      await Future.delayed(const Duration(milliseconds: 250));
-    } catch (_) {}
+    final hide = app.settings.screenshotHideWindow;
+    if (hide) {
+      try {
+        await windowManager.minimize();
+        await Future.delayed(const Duration(milliseconds: 250));
+      } catch (_) {}
+    }
     final bytes = await ScreenshotService.instance.captureRegion();
-    try {
-      await windowManager.restore();
-    } catch (_) {}
+    if (hide) {
+      try {
+        await windowManager.restore();
+      } catch (_) {}
+    }
     if (bytes != null) {
       await app.sendImageBytes(bytes,
           name: 'shot_${DateTime.now().millisecondsSinceEpoch}.png');
