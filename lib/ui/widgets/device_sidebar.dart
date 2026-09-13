@@ -152,7 +152,7 @@ class DeviceSidebar extends StatelessWidget {
                               maxLines: 1, overflow: TextOverflow.ellipsis),
                           subtitle: Text(
                               '${p.type.label} · '
-                              '${p.online ? "在线" : (p.unreachable ? "连不上(对方防火墙)" : "离线")}',
+                              '${p.online ? "在线" : (p.unreachable ? "连接不稳定" : "离线")}',
                               style: TextStyle(
                                   fontSize: 11,
                                   color: p.unreachable

@@ -27,6 +27,17 @@ class MainActivity : FlutterActivity() {
     private var pendingSaveResult: MethodChannel.Result? = null
     private var pendingSaveSourcePath: String? = null
 
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 边到边：内容铺满状态栏/导航条之下，由 Flutter 侧 SafeArea 避让。
+        // Android 15+ 系统强制；10~14 需主动开启（否则背景不铺满、出现黑边）
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q &&
+            android.os.Build.VERSION.SDK_INT < 35
+        ) {
+            window.setDecorFitsSystemWindows(false)
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)

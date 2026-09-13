@@ -156,13 +156,17 @@ class _PrintServicePageState extends State<PrintServicePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('打印服务')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          _shareSection(),
-          const SizedBox(height: 12),
-          _connectSection(),
-        ],
+      // SafeArea 只包内容避让底部导航条，背景仍全屏铺满
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _shareSection(),
+            const SizedBox(height: 12),
+            _connectSection(),
+          ],
+        ),
       ),
     );
   }

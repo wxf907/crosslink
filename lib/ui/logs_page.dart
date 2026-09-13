@@ -43,7 +43,9 @@ class LogsPage extends StatelessWidget {
           ),
         ],
       ),
-      body: entries.isEmpty
+      body: SafeArea(
+        top: false,
+        child: entries.isEmpty
           ? const Center(child: Text('暂无日志', style: TextStyle(color: Colors.black38)))
           : ListView.separated(
               padding: const EdgeInsets.all(8),
@@ -63,6 +65,7 @@ class LogsPage extends StatelessWidget {
                 );
               },
             ),
+      ),
     );
   }
 }

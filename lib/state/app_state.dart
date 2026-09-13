@@ -395,6 +395,7 @@ class AppState extends ChangeNotifier {
       } catch (e) {
         log.e('Send', '文本发送失败: $e');
         await _updateMessage(msg.copyWith(status: MessageStatus.failed));
+        _transport.resetPeer(d.deviceId); // 连接疑似卡死，主动重建
       }
     }
   }
@@ -429,6 +430,7 @@ class AppState extends ChangeNotifier {
       } catch (e) {
         log.e('Send', '图片发送失败: $e');
         await _updateMessage(msg.copyWith(status: MessageStatus.failed));
+        _transport.resetPeer(d.deviceId);
       }
     }
   }
@@ -490,6 +492,7 @@ class AppState extends ChangeNotifier {
       task.state = TransferState.failed;
       await _updateMessage(msg.copyWith(status: MessageStatus.failed));
       onNotice?.call('文件发送失败，可点击重发');
+      _transport.resetPeer(d.deviceId); // 连接疑似卡死，主动重建
     }
     notifyListeners();
   }

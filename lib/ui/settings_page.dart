@@ -26,8 +26,12 @@ class SettingsPage extends StatelessWidget {
     final app = context.watch<AppState>();
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
-      body: ListView(
-        children: [
+      // SafeArea 只包内容：顶部由 AppBar 处理，这里只避让底部导航条，
+      // 背景色（Scaffold 级）仍然全屏铺满
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          children: [
           const _SectionTitle('账号与设备'),
           ListTile(
             leading: _Avatar(path: app.identity?.avatarPath),
@@ -245,11 +249,12 @@ class SettingsPage extends StatelessWidget {
           const Center(
             child: Padding(
               padding: EdgeInsets.all(12),
-              child: Text('CrossLink v2.5.0',
+              child: Text('CrossLink v2.5.1',
                   style: TextStyle(color: Colors.black38, fontSize: 12)),
             ),
           ),
         ],
+        ),
       ),
     );
   }

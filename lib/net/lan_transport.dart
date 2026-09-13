@@ -132,6 +132,24 @@ class LanTransport implements MessageTransport {
     }
   }
 
+  /// 指定设备的连接疑似卡死（发送失败但状态显示在线）时，
+  /// 主动销毁并立即重建该连接——替代用户"退出重登"的手工复位。
+  void resetPeer(String did) {
+    final c = _conns[did];
+    final s = c?.socket;
+    if (c != null && s != null) {
+      log.i('LAN', '发送失败，重建与 $did 的连接');
+      c.socket = null;
+      c.diedAt = DateTime.now();
+      s.destroy(); // 触发 _socketClosed -> 重连调度
+      if (!c.outbound) {
+        // 被连方也可能主动出连救活（对端可能在等我们）
+        c.outbound = true;
+      }
+      c.reconnectAt = DateTime.now();
+    }
+  }
+
   // ---------------- UDP 发现 ----------------
 
   Future<void> _computeBroadcastTargets() async {
@@ -453,7 +471,11 @@ class LanTransport implements MessageTransport {
     return udpFresh;
   }
 
-  /// 「能收到广播、却连不上」——用于区分真离线与被防火墙拦截
+  /// 「能收到广播、却连不上」——用于区分真离线与连接不稳。
+  /// 30 秒持续期去抽：长连接断开后绝大多数在重连周期内恢复，
+  /// 提前标黄只会造成黄绿反复闪烁（用户实测吐槽）。
+  static final _unreachableHold = const Duration(seconds: 30);
+
   bool _peerUnreachable(RemoteDevice d, DateTime now) {
     final c = _conns[d.deviceId];
     if (c?.socket != null) return false; // 已连通
@@ -461,13 +483,13 @@ class LanTransport implements MessageTransport {
     if (!udpFresh) return false; // 广播都没了，是真离线
     if (d.version < AppConst.protocolVersion) return false;
     if (d.tcpPort <= 0) return false;
-    // 反复连不上，或曾连上后断开且超过宽限期
     if (c == null) return false;
+    // 连接不通的起点：最后一次断开/失败时刻
+    final since = c.diedAt ?? c.created;
+    if (now.difference(since) < _unreachableHold) return false; // 30s 内不标
+    // 持续 30 秒以上反复连不上才标黄
     if (c.failures >= 2) return true;
-    if (c.diedAt != null &&
-        now.difference(c.diedAt!) >= AppConst.deadGrace) {
-      return true;
-    }
+    if (c.diedAt != null) return true; // 断开已超 30s 未恢复
     return false;
   }
 
@@ -656,6 +678,17 @@ class LanTransport implements MessageTransport {
       final c = e.value;
       final s = c.socket;
       if (s == null) continue;
+      // 该连接上有文件传输进行中：发送方收不到对端帧（无逐块确认），
+      // 不能按"无往来"判死，仅继续发心跳保活
+      if (c.activeTransfers > 0) {
+        if (now.isAfter(c.nextPingAt)) {
+          try {
+            _sendFrame(s, Frame({'type': FrameType.ping}));
+          } catch (_) {}
+          c.nextPingAt = now.add(AppConst.pingInterval);
+        }
+        continue;
+      }
       if (now.difference(c.lastActivity) > AppConst.connDeadAfter) {
         log.w('LAN', '心跳超时，判定连接失效 did=${e.key}');
         s.destroy(); // 触发 _socketClosed
@@ -1181,9 +1214,16 @@ class LanTransport implements MessageTransport {
     required void Function(int sent, int total) onProgress,
   }) async {
     Socket? socket;
+    // 关键修复：优先复用长连接（与 sendImage/sendText 同策略）。
+    // 曾走 _tempSocket 无脑新建临时连接，部分网络环境（路由/AP 会话策略）
+    // 拒绝新建入站连接（10060 超时），导致"截图能过、文件全败"。
+    // 长连接复用彻底绕开该问题；仅长连接不存在时才退回临时连接。
+    socket = await _socketFor(to);
+    final persist = _isPersistSocket(socket, to.deviceId);
+    // 长连接传输中：挂起心跳判死（发送方收不到对端帧，见 _PeerConn.activeTransfers）
+    final conn = _conns[to.deviceId];
+    if (persist && conn != null) conn.activeTransfers++;
     try {
-      // 文件传输走独立临时连接，不占用持久连接
-      socket = await _tempSocket(to);
       _sendFrame(
           socket,
           Frame({
@@ -1229,13 +1269,27 @@ class LanTransport implements MessageTransport {
       // 等待对端落盘确认（超时随文件大小放宽）
       final timeoutMs = 15000 + size ~/ 200; // ≈200KB/s 下限 + 15s
       await ack.future.timeout(Duration(milliseconds: timeoutMs));
-      await socket.close();
+      // 长连接不能关闭（心跳还用它）；临时连接传完即关
+      if (!persist) {
+        try {
+          await socket.close();
+        } catch (_) {}
+      }
       log.i('LAN', '文件发送完成 $fileName');
     } catch (e) {
-      socket?.destroy();
+      // 长连接出错时交给 _socketClosed 走重连；临时连接直接销毁
+      if (persist) {
+        _socketClosed(socket, _conns[to.deviceId]);
+      } else {
+        socket.destroy();
+      }
       rethrow;
     } finally {
       _pendingAcks.remove(taskId);
+      if (persist && conn != null && conn.activeTransfers > 0) {
+        conn.activeTransfers--;
+        conn.touch(); // 传输结束恢复判死计时
+      }
     }
   }
 
@@ -1429,6 +1483,11 @@ class _PeerConn {
   DateTime? reconnectAt;
   DateTime? diedAt;
   int failures = 0;
+
+  /// 正在通过长连接传输文件的计数。
+  /// 传输期间本端持续发送数据但收不到对端帧（无逐块确认），
+  /// 挂起心跳判死，防止大文件传输中被误杀（9 秒无往来即拆连）。
+  int activeTransfers = 0;
 
   _PeerConn({required this.did});
 

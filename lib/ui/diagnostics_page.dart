@@ -111,7 +111,9 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
         ],
       ),
-      body: ListView(
+      body: SafeArea(
+        top: false,
+        child: ListView(
         padding: const EdgeInsets.all(12),
         children: [
           Card(
@@ -275,6 +277,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
           ),
           const SizedBox(height: 16),
         ],
+        ),
       ),
     );
   }

@@ -226,17 +226,9 @@ class _CrossLinkAppState extends State<CrossLinkApp> with WindowListener {
             builder: (_, s, _) =>
                 s.loggedIn ? const HomePage() : const LoginPage(),
           ),
-          // 全局避让系统内边距：Android 15+ / iOS 刘海与底部手势条
-          // 统一在此处理，所有页面与弹窗自动生效（SafeArea 会消费掉
-          // 内边距，页面内再写的 SafeArea 不会叠加重复留白）
-          builder: (context, child) => SafeArea(
-            bottom: true,
-            top: true,
-            left: true,
-            right: true,
-            minimum: const EdgeInsets.only(bottom: 4),
-            child: child ?? const SizedBox.shrink(),
-          ),
+          // 注意：不要在这里包全局 SafeArea——那会让背景色也避开状态栏
+          // 和导航条，App 被缩成"长方形"（实测踩坑）。正确做法：背景全屏
+          // 铺满（edge-to-edge），每个页面的【内容区】自己包 SafeArea。
         ),
       ),
     );

@@ -245,7 +245,7 @@ class _ChatPanelState extends State<ChatPanel> {
                         (peer?.online ?? false)
                             ? '在线'
                             : ((peer?.unreachable ?? false)
-                                ? '连不上（对方防火墙未放行）'
+                                ? '连接不稳定'
                                 : '离线'),
                         style: TextStyle(
                           fontSize: 12,
