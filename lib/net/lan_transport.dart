@@ -1273,35 +1273,42 @@ class LanTransport implements MessageTransport {
       // 大文件传输不再冻结 UI（用户实测 300MB 卡死界面的根治）
       final sock = socket;
       var readFailed = false;
-      // 注：块发送只 add 不 flush——flush 未完成期间再 add 会抛
-      // "StreamSink is bound to a stream"（2.6.0 首发事故根因）。
-      // 结束时统一一次 flush；背压由 socket 内部缓冲 + worker 消息队列天然节流。
+      // V2.6.2：带背压阀门的发送器——worker 块入队，发送循环每攒
+      // 4MB 挂起等 flush。flush 与 add 永不同时（2.6.0 事故根治），
+      // 尾段不再积压（2.6.1 的 97% 卡顿根治）。
+      final sender = _ThrottledSender(
+        socket: sock,
+        sendFrame: (frameBytes) => sock.add(frameBytes),
+      );
       await spawnFileReader(
         path: filePath,
         size: size,
         chunkSize: AppConst.fileChunkSize,
         onChunk: (chunk, offset) {
-          _sendFrame(
-              sock,
-              Frame({
-                'type': FrameType.fileChunk,
-                'id': taskId,
-                'bodyLen': chunk.length,
-              }, chunk));
+          sender.addChunk(
+            Frame({
+              'type': FrameType.fileChunk,
+              'id': taskId,
+              'bodyLen': chunk.length,
+            }, chunk).encode(),
+          );
           localSent = offset + chunk.length;
           // 对端没回执时（旧版本），退回用本地进度
           if (remoteBytes == 0) onProgress(localSent, size);
         },
         onDone: (total) {
           if (remoteBytes == 0) onProgress(total, size);
+          sender.markReaderDone();
         },
         onError: (e) {
           readFailed = true;
+          sender.markFailed(e);
         },
       );
       if (readFailed) {
         throw StateError('读取文件失败：$filePath');
       }
+      await sender.done;
 
       _sendFrame(socket, Frame({'type': FrameType.fileEnd, 'id': taskId}));
       await socket.flush();
@@ -1372,26 +1379,38 @@ class LanTransport implements MessageTransport {
 
       var readFailed = false;
       final sock = socket;
+      // V2.6.2 背压阀门（与 sendFile 同款，详见 _ThrottledSender 注释）
+      final sender = _ThrottledSender(
+        socket: sock,
+        sendFrame: (frameBytes) => sock.add(frameBytes),
+      );
       await spawnFileReader(
         path: filePath,
         size: size,
         chunkSize: AppConst.fileChunkSize,
         onChunk: (chunk, offset) {
-          _sendFrame(sock, Frame({
-            'type': FrameType.fileChunk,
-            'id': taskId,
-            'bodyLen': chunk.length,
-          }, chunk));
+          sender.addChunk(
+            Frame({
+              'type': FrameType.fileChunk,
+              'id': taskId,
+              'bodyLen': chunk.length,
+            }, chunk).encode(),
+          );
           if (remoteBytes == 0) onProgress(offset + chunk.length, size);
         },
         onDone: (total) {
           if (remoteBytes == 0) onProgress(total, size);
+          sender.markReaderDone();
         },
-        onError: (e) => readFailed = true,
+        onError: (e) {
+          readFailed = true;
+          sender.markFailed(e);
+        },
       );
       if (readFailed) {
         throw StateError('读取文件失败：$filePath');
       }
+      await sender.done;
 
       _sendFrame(socket, Frame({'type': FrameType.fileEnd, 'id': taskId}));
       await socket.flush();
@@ -1567,6 +1586,103 @@ class _PendingAck {
   final Completer<void> completer;
   final Socket socket;
   _PendingAck(this.completer, this.socket);
+}
+
+/// 带背压阀门的大文件发送器（V2.6.2）。
+///
+/// 设计要点（三版演化的最终形态）：
+/// - 读盘在 worker Isolate（UI 不冻结的保证，V2.6.0 引入）
+/// - worker 块先入本队列，由独立的发送循环消费（推转拉）
+/// - 发送循环每攒满 [_flushThreshold] 字节 await 一次 socket.flush()：
+///   flush 期间发送循环挂起、不再 add——add 与 flush 永不同时
+///   （V2.6.0 事故：flush 进行中 add 抛 "StreamSink is bound to a stream"）
+/// - await flush 让出主线程，UI 保持流畅（V2.6.1 尾段积压的根治）
+class _ThrottledSender {
+  final Socket socket;
+  final void Function(Uint8List frameBytes) sendFrame;
+
+  /// 每攒多少字节停一次等 flush（4MB）
+  static const _flushThreshold = 4 * 1024 * 1024;
+
+  final _queue = <Uint8List>[];
+  int _sinceFlush = 0;
+  bool _readerDone = false;
+  bool _failed = false;
+  final _idle = <Completer<void>>[]; // 等待"队列排空/全部完成"的观察者
+
+  _ThrottledSender({required this.socket, required this.sendFrame});
+
+  bool get _finished => _failed || (_readerDone && _queue.isEmpty);
+
+  /// worker 块到达（事件循环回调，只入队+泵，不阻塞）
+  void addChunk(Uint8List frameBytes) {
+    if (_finished) return;
+    _queue.add(frameBytes);
+    _pump();
+  }
+
+  void markReaderDone() {
+    _readerDone = true;
+    _pump();
+  }
+
+  void markFailed(Object e) {
+    _failed = true;
+    _queue.clear();
+    _notify();
+  }
+
+  bool _pumping = false;
+  void _pump() {
+    if (_pumping || _finished) {
+      if (_finished) _notify();
+      return;
+    }
+    _pumping = true;
+    _drain();
+  }
+
+  void _drain() {
+    while (!_failed && _queue.isNotEmpty) {
+      final frame = _queue.removeAt(0);
+      sendFrame(frame);
+      _sinceFlush += frame.length;
+      if (_sinceFlush >= _flushThreshold) {
+        // 背压点：攒满阈值，挂起等 flush 排空再继续。
+        // flush 期间本循环挂起、绝无 add——StreamSink 竞态不可能发生。
+        _sinceFlush = 0;
+        socket.flush().then((_) {
+          _pumping = false;
+          _pump();
+        }).catchError((Object e) {
+          _pumping = false;
+          markFailed(e);
+        });
+        return;
+      }
+    }
+    _pumping = false;
+    if (_finished) _notify();
+  }
+
+  void _notify() {
+    for (final c in _idle) {
+      if (!c.isCompleted) c.complete();
+    }
+    _idle.clear();
+  }
+
+  /// 等待全部发送完（读端完成且队列排空），或失败抛出
+  Future<void> get done async {
+    while (!_finished) {
+      final c = Completer<void>();
+      _idle.add(c);
+      await c.future;
+    }
+    if (_failed) {
+      throw StateError('传输中断（socket flush 失败）');
+    }
+  }
 }
 
 class _RecvFile {

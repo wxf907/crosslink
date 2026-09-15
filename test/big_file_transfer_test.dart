@@ -84,10 +84,35 @@ void main() {
 
     var lastSent = 0;
     final sw = Stopwatch()..start();
-    await a.sendFile(devB, 'task-big', src.path, 'big.bin', total,
+
+    // 主线程响应性监测（V2.6.2）：传输期间每 50ms 打点，
+    // 任何一次打点延迟 > 2s 判为 UI 卡顿（97% 卡住问题的自动化断言）
+    final latencySamples = <int>[];
+    Timer? probe;
+    var lastTick = DateTime.now();
+    probe = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      final now = DateTime.now();
+      latencySamples.add(now.difference(lastTick).inMilliseconds);
+      lastTick = now;
+    });
+
+    final sendFuture = a.sendFile(devB, 'task-big', src.path, 'big.bin', total,
         onProgress: (sent, tot) => lastSent = sent);
-    final path = await bGotFile.future.timeout(const Duration(seconds: 60));
+    final path =
+        await bGotFile.future.timeout(const Duration(seconds: 60));
+    await sendFuture;
+    probe.cancel();
     sw.stop();
+
+    final maxLatency = latencySamples.isEmpty
+        ? 0
+        : latencySamples.reduce((x, y) => x > y ? x : y);
+    // CI 调度抖动容忍 2s；实际 UI 卡顿（尾段积压）表现为持续数百 ms~秒级
+    expect(maxLatency, lessThan(2000),
+        reason: '传输期间主线程打点最大延迟 ${maxLatency}ms（UI 卡顿回归）');
+    // ignore: avoid_print
+    print('15MB 传输耗时 ${sw.elapsed}，末次进度 $lastSent，'
+        '打点 ${latencySamples.length} 次最大延迟 ${maxLatency}ms');
 
     final saved = await File(path).readAsBytes();
     expect(saved.length, total, reason: '大小必须一致');
@@ -101,10 +126,6 @@ void main() {
         reason: '偏移 $probe 处内容不一致（分块错乱）',
       );
     }
-    // 内存暴涨检测：15MB 传输若全堆内存，进程峰值会显著超文件大小。
-    // 这里至少断言传输完成（若背压失控导致 OOM/崩溃，测试自身会失败）。
-    // ignore: avoid_print
-    print('15MB 传输耗时 ${sw.elapsed}，末次进度 $lastSent');
 
     await a.stop();
     await b.stop();
