@@ -1285,13 +1285,21 @@ class LanTransport implements MessageTransport {
         size: size,
         chunkSize: AppConst.fileChunkSize,
         onChunk: (chunk, offset) {
-          sender.addChunk(
-            Frame({
-              'type': FrameType.fileChunk,
-              'id': taskId,
-              'bodyLen': chunk.length,
-            }, chunk).encode(),
-          );
+          // V2.6.3：worker 发来的是 4MB 零拷贝大块（TransferableTypedData），
+          // 此处按协议分块大小切成多帧入发送队列
+          for (var pos = 0; pos < chunk.length; pos += AppConst.fileChunkSize) {
+            final end = (pos + AppConst.fileChunkSize) > chunk.length
+                ? chunk.length
+                : pos + AppConst.fileChunkSize;
+            final piece = Uint8List.sublistView(chunk, pos, end);
+            sender.addChunk(
+              Frame({
+                'type': FrameType.fileChunk,
+                'id': taskId,
+                'bodyLen': piece.length,
+              }, piece).encode(),
+            );
+          }
           localSent = offset + chunk.length;
           // 对端没回执时（旧版本），退回用本地进度
           if (remoteBytes == 0) onProgress(localSent, size);
@@ -1389,13 +1397,20 @@ class LanTransport implements MessageTransport {
         size: size,
         chunkSize: AppConst.fileChunkSize,
         onChunk: (chunk, offset) {
-          sender.addChunk(
-            Frame({
-              'type': FrameType.fileChunk,
-              'id': taskId,
-              'bodyLen': chunk.length,
-            }, chunk).encode(),
-          );
+          // V2.6.3：4MB 零拷贝大块按协议分块切多帧（同 sendFile）
+          for (var pos = 0; pos < chunk.length; pos += AppConst.fileChunkSize) {
+            final end = (pos + AppConst.fileChunkSize) > chunk.length
+                ? chunk.length
+                : pos + AppConst.fileChunkSize;
+            final piece = Uint8List.sublistView(chunk, pos, end);
+            sender.addChunk(
+              Frame({
+                'type': FrameType.fileChunk,
+                'id': taskId,
+                'bodyLen': piece.length,
+              }, piece).encode(),
+            );
+          }
           if (remoteBytes == 0) onProgress(offset + chunk.length, size);
         },
         onDone: (total) {

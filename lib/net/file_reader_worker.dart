@@ -5,14 +5,18 @@ import 'dart:typed_data';
 
 /// 文件读取 worker：把磁盘读取从 UI 主线程挪走（大文件传输卡界面的主因）。
 ///
-/// 协议（worker → 主线程，按序到达）：
-///   {type:'chunk', offset, bytes}  每块一条
-///   {type:'done', total}           读完全部
-///   {type:'error', error}          读取失败
+/// V2.6.3 关键改进：
+/// - 跨 isolate 传输用 [TransferableTypedData]（零拷贝移交给主线程），
+///   消除 V2.6.2 在快网上"一秒冲100%后主线程卡5秒"的问题——
+///   根因是 SendPort 直接发 Uint8List 会整块内存拷贝，1200 个小块的
+///   拷贝+帧编码全在主线程事件循环里密集执行。
+/// - worker 侧聚合成 4MB 大批再发（消息数从千级降到百级），
+///   主线程每条消息的处理成本摊薄。
 ///
-/// 主线程只做 socket 写（异步非阻塞），磁盘 I/O 不再挤占 UI 线程。
-/// worker 结束自然退出（Isolate.exit），无 onExit 监听（该 Dart 版本
-/// 的 spawn 不支持），以 done/error 消息作为收尾信号，附超时保护。
+/// 协议（worker → 主线程）：
+///   {type:'chunk', offset, data: TransferableTypedData}
+///   {type:'done', total}
+///   {type:'error', error}
 Future<void> spawnFileReader({
   required String path,
   required int size,
@@ -49,7 +53,10 @@ Future<void> spawnFileReader({
     if (msg is! Map) return;
     switch (msg['type']) {
       case 'chunk':
-        onChunk(msg['bytes'] as Uint8List, msg['offset'] as int);
+        // TransferableTypedData.materialize() 把所有权移入本 isolate，
+        // 不发生内容拷贝（这是本版本的核心）
+        final ttd = msg['data'] as TransferableTypedData;
+        onChunk(ttd.materialize().asUint8List(), msg['offset'] as int);
         break;
       case 'done':
         onDone(msg['total'] as int);
@@ -82,14 +89,30 @@ void _readerEntry(_ReaderArgs args) async {
     final raf = File(args.path).openSync();
     try {
       var offset = 0;
+      // worker 侧聚合批：4MB 一批发给主线程（减少消息条数）
+      const batchTarget = 4 * 1024 * 1024;
+      var batch = BytesBuilder(copy: false);
+      var batchStart = 0;
+      var batchLen = 0;
       while (offset < args.size) {
         final n = (args.size - offset) < args.chunkSize
             ? (args.size - offset)
             : args.chunkSize;
         final chunk = raf.readSync(n);
         if (chunk.isEmpty) break;
-        out.send({'type': 'chunk', 'offset': offset, 'bytes': chunk});
+        if (batchLen == 0) batchStart = offset;
+        batch.add(chunk);
+        batchLen += chunk.length;
         offset += chunk.length;
+        if (batchLen >= batchTarget || offset >= args.size) {
+          final bytes = batch.takeBytes();
+          out.send({
+            'type': 'chunk',
+            'offset': batchStart,
+            'data': TransferableTypedData.fromList([bytes]),
+          });
+          batchLen = 0;
+        }
       }
     } finally {
       raf.closeSync();

@@ -45,7 +45,10 @@ void main() {
       rebuilt.add(c);
     }
     expect(rebuilt.toBytes(), equals(data), reason: '分块重组后应与原文件一致');
-    expect(chunks.length, (total / (256 * 1024)).ceil());
+    // V2.6.3：worker 按 4MB 聚合批发（5MB+123B 文件 → 2 批），
+    // 消息条数从 21 降到 2，降低主线程消息处理密度
+    expect(chunks.length, 2,
+        reason: '应按 4MB 聚合批发（4MB+1MB 两批）');
 
     await tmp.delete(recursive: true);
   }, timeout: const Timeout(Duration(seconds: 60)));
