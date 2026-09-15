@@ -249,7 +249,7 @@ class SettingsPage extends StatelessWidget {
           const Center(
             child: Padding(
               padding: EdgeInsets.all(12),
-              child: Text('CrossLink v2.5.1',
+              child: Text('CrossLink v2.6.0',
                   style: TextStyle(color: Colors.black38, fontSize: 12)),
             ),
           ),

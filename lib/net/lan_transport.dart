@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import '../core/constants.dart';
 import '../core/logger.dart';
 import '../models/identity.dart';
+import 'file_reader_worker.dart';
 import 'protocol.dart';
 import 'transport.dart';
 
@@ -57,6 +58,9 @@ class LanTransport implements MessageTransport {
 
   /// 待确认的应用层 ack：msgId/taskId -> pending
   final Map<String, _PendingAck> _pendingAcks = {};
+
+  /// 传输任务的真实进度回调（对端 progressAck 驱动）：taskId -> 回调
+  final Map<String, void Function(int bytes)> _progressCallbacks = {};
 
   @override
   Future<void> start(Identity identity, TransportCallbacks callbacks) async {
@@ -945,6 +949,14 @@ class LanTransport implements MessageTransport {
         if (a != null && !a.completer.isCompleted) a.completer.complete();
         break;
 
+      case FrameType.progressAck:
+        // 对端回传的真实接收进度（V2.6）：驱动发送方进度条。
+        // bytes = 对端已落盘字节数，比"已塞入本机缓冲"真实。
+        final id = frame.header['id'] as String? ?? '';
+        final bytes = (frame.header['bytes'] as int?) ?? 0;
+        _progressCallbacks[id]?.call(bytes);
+        break;
+
       case FrameType.text:
         final peer = getPeer();
         if (peer == null) return;
@@ -1002,6 +1014,16 @@ class LanTransport implements MessageTransport {
             rf.early.add(body);
           }
           rf.received += body.length;
+          // 每 1MB 向发送方回传一次真实接收进度（V2.6 真实进度条）。
+          // 旧版发送方收到此帧会走 default 忽略，无兼容问题。
+          if (rf.received - rf.lastAcked >= 1024 * 1024) {
+            rf.lastAcked = rf.received;
+            _sendFrame(socket, Frame({
+              'type': FrameType.progressAck,
+              'id': taskId,
+              'bytes': rf.received,
+            }));
+          }
           _cb?.onFileProgress(taskId, rf.received, rf.total);
         }
         break;
@@ -1235,35 +1257,57 @@ class LanTransport implements MessageTransport {
       final ack = Completer<void>();
       // 旧版接收方同样会回 file_ack，因此无条件等待
       _pendingAcks[taskId] = _PendingAck(ack, socket);
-      var sent = 0;
+
+      // 进度：优先用对端回传的真实接收字节（V2.6 progress_ack）；
+      // 旧版对端不回执时，退回本地已读进度（仍然真实：读完成≈发送排队完成）
+      var localSent = 0;
+      var remoteBytes = 0;
+      _progressCallbacks[taskId] = (b) {
+        if (b > remoteBytes) {
+          remoteBytes = b;
+          onProgress(b, size);
+        }
+      };
+
+      // 磁盘读移入 worker isolate（V2.6）：主线程只做 socket 写，
+      // 大文件传输不再冻结 UI（用户实测 300MB 卡死界面的根治）
+      final sock = socket;
       var sinceFlush = 0;
-      final raf = await File(filePath).open();
-      try {
-        while (sent < size) {
-          final remain = size - sent;
-          final n =
-              remain < AppConst.fileChunkSize ? remain : AppConst.fileChunkSize;
-          final chunk = await raf.read(n);
-          if (chunk.isEmpty) break;
+      var readFailed = false;
+      await spawnFileReader(
+        path: filePath,
+        size: size,
+        chunkSize: AppConst.fileChunkSize,
+        onChunk: (chunk, offset) {
           _sendFrame(
-              socket,
+              sock,
               Frame({
                 'type': FrameType.fileChunk,
                 'id': taskId,
                 'bodyLen': chunk.length,
               }, chunk));
-          sent += chunk.length;
-          onProgress(sent, size);
-          // 每 4 块（1MB）flush 一次：既提供回压又避免逐块等待
+          localSent = offset + chunk.length;
+          // 对端没回执时（旧版本），退回用本地进度
+          if (remoteBytes == 0) onProgress(localSent, size);
           sinceFlush++;
           if (sinceFlush >= 4) {
-            await socket.flush();
+            // 不 await flush：socket 写本身异步非阻塞，
+            // flush 只为回收背压窗口，晚一点无碍
+            sock.flush().catchError((_) {});
             sinceFlush = 0;
           }
-        }
-      } finally {
-        await raf.close();
+        },
+        onDone: (total) {
+          if (remoteBytes == 0) onProgress(total, size);
+        },
+        onError: (e) {
+          readFailed = true;
+        },
+      );
+      if (readFailed) {
+        throw StateError('读取文件失败：$filePath');
       }
+
       _sendFrame(socket, Frame({'type': FrameType.fileEnd, 'id': taskId}));
       await socket.flush();
       // 等待对端落盘确认（超时随文件大小放宽）
@@ -1286,6 +1330,7 @@ class LanTransport implements MessageTransport {
       rethrow;
     } finally {
       _pendingAcks.remove(taskId);
+      _progressCallbacks.remove(taskId);
       if (persist && conn != null && conn.activeTransfers > 0) {
         conn.activeTransfers--;
         conn.touch(); // 传输结束恢复判死计时
@@ -1305,7 +1350,12 @@ class LanTransport implements MessageTransport {
   }) async {
     Socket? socket;
     try {
-      socket = await _tempSocket(to);
+      // 与 sendFile 相同策略：优先长连接（V2.6 统一改造，
+      // 打印任务传输同样受益于"不被新连接拒绝"与"不卡 UI"）
+      socket = await _socketFor(to);
+      final persist = _isPersistSocket(socket, to.deviceId);
+      final conn = _conns[to.deviceId];
+      if (persist && conn != null) conn.activeTransfers++;
       _sendFrame(socket, Frame({
         'type': FrameType.fileOffer,
         'id': taskId,
@@ -1316,31 +1366,60 @@ class LanTransport implements MessageTransport {
       }));
       final ack = Completer<void>();
       _pendingAcks[taskId] = _PendingAck(ack, socket);
-      var sent = 0;
-      final raf = await File(filePath).open();
-      try {
-        while (sent < size) {
-          final n = (size - sent) < AppConst.fileChunkSize
-              ? (size - sent)
-              : AppConst.fileChunkSize;
-          final chunk = await raf.read(n);
-          if (chunk.isEmpty) break;
-          _sendFrame(socket, Frame({
+
+      var remoteBytes = 0;
+      _progressCallbacks[taskId] = (b) {
+        if (b > remoteBytes) {
+          remoteBytes = b;
+          onProgress(b, size);
+        }
+      };
+
+      var sinceFlush = 0;
+      var readFailed = false;
+      final sock = socket;
+      await spawnFileReader(
+        path: filePath,
+        size: size,
+        chunkSize: AppConst.fileChunkSize,
+        onChunk: (chunk, offset) {
+          _sendFrame(sock, Frame({
             'type': FrameType.fileChunk,
             'id': taskId,
             'bodyLen': chunk.length,
           }, chunk));
-          sent += chunk.length;
-          onProgress(sent, size);
-        }
-      } finally {
-        await raf.close();
+          if (remoteBytes == 0) onProgress(offset + chunk.length, size);
+          sinceFlush++;
+          if (sinceFlush >= 4) {
+            sock.flush().catchError((_) {});
+            sinceFlush = 0;
+          }
+        },
+        onDone: (total) {
+          if (remoteBytes == 0) onProgress(total, size);
+        },
+        onError: (e) => readFailed = true,
+      );
+      if (readFailed) {
+        throw StateError('读取文件失败：$filePath');
       }
+
       _sendFrame(socket, Frame({'type': FrameType.fileEnd, 'id': taskId}));
       await socket.flush();
       await ack.future.timeout(Duration(milliseconds: 15000 + size ~/ 200));
+      if (!persist) {
+        try {
+          await socket.close();
+        } catch (_) {}
+      }
     } finally {
       _pendingAcks.remove(taskId);
+      _progressCallbacks.remove(taskId);
+      final conn = _conns[to.deviceId];
+      if (conn != null && conn.activeTransfers > 0) {
+        conn.activeTransfers--;
+        conn.touch();
+      }
       try {
         await socket?.close();
       } catch (_) {}
@@ -1510,5 +1589,8 @@ class _RecvFile {
   /// 文件就绪前缓冲的早到块
   final List<Uint8List> early = [];
   int received = 0;
+
+  /// 上次向发送方回传进度时的字节数（每 1MB 回传一次）
+  int lastAcked = 0;
   _RecvFile({required this.total});
 }

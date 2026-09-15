@@ -86,4 +86,8 @@ class FrameType {
   // V2 头像同步：携带头像图片字节与时间戳，较新者胜出
   static const avatar = 'avatar';
   static const printOffer = 'print_offer';
+  // V2.6 传输进度回执：接收方周期回传已落盘字节数，
+  // 发送方以此驱动真实进度条（"卡5%跳100%"的假进度根治）。
+  // 旧版对端收到会走 switch default 直接忽略，双向兼容。
+  static const progressAck = 'progress_ack';
 }
