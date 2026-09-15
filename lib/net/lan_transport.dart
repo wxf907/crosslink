@@ -1272,8 +1272,10 @@ class LanTransport implements MessageTransport {
       // 磁盘读移入 worker isolate（V2.6）：主线程只做 socket 写，
       // 大文件传输不再冻结 UI（用户实测 300MB 卡死界面的根治）
       final sock = socket;
-      var sinceFlush = 0;
       var readFailed = false;
+      // 注：块发送只 add 不 flush——flush 未完成期间再 add 会抛
+      // "StreamSink is bound to a stream"（2.6.0 首发事故根因）。
+      // 结束时统一一次 flush；背压由 socket 内部缓冲 + worker 消息队列天然节流。
       await spawnFileReader(
         path: filePath,
         size: size,
@@ -1289,13 +1291,6 @@ class LanTransport implements MessageTransport {
           localSent = offset + chunk.length;
           // 对端没回执时（旧版本），退回用本地进度
           if (remoteBytes == 0) onProgress(localSent, size);
-          sinceFlush++;
-          if (sinceFlush >= 4) {
-            // 不 await flush：socket 写本身异步非阻塞，
-            // flush 只为回收背压窗口，晚一点无碍
-            sock.flush().catchError((_) {});
-            sinceFlush = 0;
-          }
         },
         onDone: (total) {
           if (remoteBytes == 0) onProgress(total, size);
@@ -1375,7 +1370,6 @@ class LanTransport implements MessageTransport {
         }
       };
 
-      var sinceFlush = 0;
       var readFailed = false;
       final sock = socket;
       await spawnFileReader(
@@ -1389,11 +1383,6 @@ class LanTransport implements MessageTransport {
             'bodyLen': chunk.length,
           }, chunk));
           if (remoteBytes == 0) onProgress(offset + chunk.length, size);
-          sinceFlush++;
-          if (sinceFlush >= 4) {
-            sock.flush().catchError((_) {});
-            sinceFlush = 0;
-          }
         },
         onDone: (total) {
           if (remoteBytes == 0) onProgress(total, size);
