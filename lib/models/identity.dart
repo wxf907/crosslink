@@ -23,6 +23,10 @@ class Identity {
   /// 设备类型
   final DeviceType deviceType;
 
+  /// 设备角色（用途标签：办公机/常开主机/手机…），随广播同步给同组设备。
+  /// 仅用于列表识别，不参与任何协议判定。
+  final DeviceRole deviceRole;
+
   /// 头像本地文件路径（可空，空则显示默认图标）
   final String? avatarPath;
 
@@ -32,6 +36,7 @@ class Identity {
     required this.deviceId,
     required this.deviceName,
     required this.deviceType,
+    this.deviceRole = DeviceRole.unset,
     this.avatarPath,
   });
 
@@ -41,12 +46,14 @@ class Identity {
     return sha256.convert(bytes).toString();
   }
 
-  Identity copyWith({String? deviceName, String? avatarPath}) => Identity(
+  Identity copyWith({String? deviceName, String? avatarPath, DeviceRole? deviceRole}) =>
+      Identity(
         accountId: accountId,
         groupId: groupId,
         deviceId: deviceId,
         deviceName: deviceName ?? this.deviceName,
         deviceType: deviceType,
+        deviceRole: deviceRole ?? this.deviceRole,
         avatarPath: avatarPath ?? this.avatarPath,
       );
 
@@ -56,6 +63,7 @@ class Identity {
         'deviceId': deviceId,
         'deviceName': deviceName,
         'deviceType': deviceType.name,
+        'deviceRole': deviceRole.name,
         'avatarPath': avatarPath,
       };
 
@@ -65,6 +73,7 @@ class Identity {
         deviceId: j['deviceId'] as String,
         deviceName: j['deviceName'] as String,
         deviceType: DeviceType.fromString(j['deviceType'] as String?),
+        deviceRole: DeviceRole.fromString(j['deviceRole'] as String?),
         avatarPath: j['avatarPath'] as String?,
       );
 }
@@ -80,6 +89,10 @@ class RemoteDevice {
 
   /// 对端协议版本（UDP 广播携带；1=旧版按需连接，2=持久连接+心跳）
   int version;
+
+  /// 对端用途角色（announce/hello 的 'role' 字段）。
+  /// 旧版本对端不发时为 [DeviceRole.unset]，列表回退按 [type] 选图标。
+  DeviceRole role;
 
   /// 在线状态：由传输层综合「持久连接存活 + TCP 心跳 + UDP 新鲜度」计算，
   /// 不再单纯依赖 UDP 广播时间（旧版“显示在线实际不在线”的根源）
@@ -97,6 +110,7 @@ class RemoteDevice {
     required this.tcpPort,
     required this.lastSeen,
     this.version = 1,
+    this.role = DeviceRole.unset,
     this.online = false,
     this.unreachable = false,
   });

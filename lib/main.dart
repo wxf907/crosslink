@@ -9,6 +9,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/logger.dart';
 import 'services/firewall_service.dart';
+import 'services/taskbar_flash.dart';
 import 'services/tray_service.dart';
 import 'state/app_state.dart';
 import 'ui/home_page.dart';
@@ -118,7 +119,8 @@ class CrossLinkApp extends StatefulWidget {
   State<CrossLinkApp> createState() => _CrossLinkAppState();
 }
 
-class _CrossLinkAppState extends State<CrossLinkApp> with WindowListener {
+class _CrossLinkAppState extends State<CrossLinkApp>
+    with WindowListener, WidgetsBindingObserver {
   static final _isDesktop =
       Platform.isWindows || Platform.isLinux || Platform.isMacOS;
   final _navKey = GlobalKey<NavigatorState>();
@@ -129,23 +131,103 @@ class _CrossLinkAppState extends State<CrossLinkApp> with WindowListener {
   @override
   void initState() {
     super.initState();
+    // 观察者在桌面/移动两端都要注册（安卓有前台服务保活，
+    // 退到后台照样收消息，必须知道"此刻用户看不看得见"）
+    WidgetsBinding.instance.addObserver(this);
     if (!_isDesktop) return;
     windowManager.addListener(this);
     TrayService.instance
       ..onExitRequested = _quitApp
       ..init();
     _app.addListener(_syncPreventClose);
+    _app.addListener(_syncUnreadAttention);
     _syncPreventClose();
+    // windowManager.getId() 在 Windows 上返回的就是主窗口 HWND，
+    // 取一次缓存起来，之后任务栏闪烁/停止都用它
+    windowManager.getId().then((v) => _hwnd = v).catchError((_) => 0);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (_isDesktop) {
       _app.removeListener(_syncPreventClose);
+      _app.removeListener(_syncUnreadAttention);
       windowManager.removeListener(this);
     }
     super.dispose();
   }
+
+  /// 前后台切换 → 维护可见性。
+  ///
+  /// inactive（被其它窗口夺焦但仍看得见）算可见：此时用户确实能看到
+  /// 新消息，不该攒未读。hidden（最小化/切后台/收进托盘）才算不可见。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _app.windowVisible = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+  }
+
+  /// 主窗口 HWND（0 = 尚未取到）
+  int _hwnd = 0;
+
+  /// 上一次观察到的未读总数，用来识别"新增未读"这条沿
+  int _lastUnread = 0;
+
+  /// 未读变化 → 任务栏闪烁。
+  ///
+  /// 只在"新增未读"这条沿上触发，避免每次 notifyListeners 都重闪一次；
+  /// 窗口就在前台时不闪——用户正看着，闪了只是噪音。
+  void _syncUnreadAttention() {
+    if (!_isDesktop) return;
+    final n = _app.totalUnread;
+    if (n == 0) {
+      if (_lastUnread != 0 && _hwnd != 0) TaskbarFlash.stop(_hwnd);
+      _lastUnread = 0;
+      return;
+    }
+    if (n > _lastUnread) {
+      _attentionNeeded();
+    } else {
+      _lastUnread = n;
+    }
+  }
+
+  Future<void> _attentionNeeded() async {
+    _lastUnread = _app.totalUnread;
+    if (_hwnd == 0) return;
+    final visible = await windowManager.isVisible();
+    final focused = await windowManager.isFocused();
+    if (visible && focused) {
+      TaskbarFlash.stop(_hwnd);
+      return;
+    }
+    TaskbarFlash.start(_hwnd);
+  }
+
+  /// 收入托盘：隐藏窗口的同时把可见性置 false。
+  /// 漏了这一步，新消息会被判定为"用户看得见"而直接算已读，
+  /// 未读数永远不增长，任务栏闪烁也就永远不会触发。
+  Future<void> _hideToTray() async {
+    await windowManager.hide();
+    _app.windowVisible = false;
+  }
+
+  @override
+  void onWindowFocus() {
+    _app.windowVisible = true;
+    if (_hwnd != 0) TaskbarFlash.stop(_hwnd);
+    _app.syncActiveRead(); // 回到前台：正看着的会话视为已读
+  }
+
+  @override
+  void onWindowRestore() {
+    _app.windowVisible = true;
+    _app.syncActiveRead();
+  }
+
+  @override
+  void onWindowMinimize() => _app.windowVisible = false;
 
   /// 'quit' 策略下不拦截关闭，让系统直接销毁窗口；其余策略拦截并自行处理
   void _syncPreventClose() {
@@ -159,7 +241,7 @@ class _CrossLinkAppState extends State<CrossLinkApp> with WindowListener {
     try {
       switch (_app.settings.closeBehavior) {
         case 'tray':
-          await windowManager.hide();
+          await _hideToTray();
         case 'quit':
           await _quitApp();
         default:
@@ -173,7 +255,7 @@ class _CrossLinkAppState extends State<CrossLinkApp> with WindowListener {
   Future<void> _askClose() async {
     final ctx = _navKey.currentContext;
     if (ctx == null) {
-      await windowManager.hide();
+      await _hideToTray();
       return;
     }
     final result = await showDialog<_CloseChoice>(
@@ -183,7 +265,7 @@ class _CrossLinkAppState extends State<CrossLinkApp> with WindowListener {
     if (result == null) return; // 取消，窗口保持打开
     if (result.remember) await _app.setCloseBehavior(result.action);
     if (result.action == 'tray') {
-      await windowManager.hide();
+      await _hideToTray();
     } else {
       await _quitApp();
     }

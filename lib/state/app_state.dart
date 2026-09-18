@@ -19,17 +19,132 @@ import '../services/printing/print_service.dart';
 import '../services/print_engine.dart';
 import '../services/storage_service.dart';
 
-/// 设备在列表中的展示视图（合并在线设备 + 历史会话）
+/// 设备在列表中的展示视图（合并在线设备 + 历史会话）。
+///
+/// 除了连接状态，还承载"一眼认出是哪台机器"所需的信息：
+/// 用途角色 [role]、局域网 [host]、本机备注 [alias]、未读数 [unread]
+/// 与最近一条收到的消息 [lastIncoming]。
+///
+/// 派生逻辑（[displayName]/[colorSeed]/[initial]/[ipTail]/[activityLabel]）
+/// 全部写成纯函数放在这里而不是 widget 里，为的是能脱离界面直接单测。
 class PeerView {
   final String id;
+
+  /// 对方自己上报的设备名（由那台机器自行决定）
   final String name;
   final DeviceType type;
+
+  /// 用途角色；对端为旧版本时是 [DeviceRole.unset]
+  final DeviceRole role;
   final bool online;
 
   /// 能收到对方广播但 TCP 连不上（多半是对方防火墙未放行）
   final bool unreachable;
-  PeerView(this.id, this.name, this.type, this.online,
-      [this.unreachable = false]);
+
+  /// 对端局域网 IP；离线且从未见过时为 null
+  final String? host;
+
+  /// 本机给这台设备起的备注名（空串=没起）
+  final String alias;
+
+  /// 未读消息条数（仅统计收到方向）
+  final int unread;
+
+  /// 最近一条"收到的"消息，用于副标题预览
+  final ChatMessage? lastIncoming;
+
+  PeerView({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.online,
+    this.role = DeviceRole.unset,
+    this.unreachable = false,
+    this.host,
+    this.alias = '',
+    this.unread = 0,
+    this.lastIncoming,
+  });
+
+  /// 列表展示名：我起的备注优先，其次对方自报名
+  String get displayName => alias.isNotEmpty ? alias : name;
+
+  /// 稳定配色种子：FNV-1a 哈希 deviceId。
+  ///
+  /// 之所以哈希 id 而不是哈希名字——id 由 MachineGuid / ANDROID_ID 派生，
+  /// 重装系统前都不会变，且与设备一一对应；而名字用户可以随时改成
+  /// 任何重名的字符串。哈希结果取模交给界面层决定调色板。
+  int get colorSeed {
+    const fnvPrime = 0x01000193;
+    var hash = 0x811c9dc5;
+    for (final u in id.codeUnits) {
+      hash = (hash ^ u) * fnvPrime & 0xFFFFFFFF;
+    }
+    return hash;
+  }
+
+  /// 徽标首字：中文名取第一个汉字，英文名取首字母并大写。
+  /// 空名兜底为 '?'，避免出现空白圆。用 runes 取码点，
+  /// 免得为一个字引入 package:characters 依赖。
+  String get initial {
+    final n = displayName.trim();
+    if (n.isEmpty) return '?';
+    final c = String.fromCharCodes(n.runes.take(1));
+    return RegExp(r'^[a-z]$').hasMatch(c) ? c.toUpperCase() : c;
+  }
+
+  /// IP 尾段（`.23`），用于同型号设备的技术兜底识别；无 IP 时返回空串
+  String get ipTail {
+    final h = host;
+    if (h == null || h.isEmpty) return '';
+    final i = h.lastIndexOf('.');
+    return i < 0 ? h : '.${h.substring(i + 1)}';
+  }
+
+  /// 副标题里的"最近动态"：`3分钟前 · 发来1个文件`；无消息时为空串
+  String activityLabel(DateTime now) {
+    final m = lastIncoming;
+    if (m == null) return '';
+    final secs = now.difference(m.time).inSeconds;
+    final when = secs < 60
+        ? '刚刚'
+        : secs < 3600
+            ? '${secs ~/ 60}分钟前'
+            : secs < 86400
+                ? '${secs ~/ 3600}小时前'
+                : '${secs ~/ 86400}天前';
+    final what = switch (m.kind) {
+      MessageKind.image => '发来图片',
+      MessageKind.file => '发来文件',
+      MessageKind.system => '发来通知',
+      MessageKind.text => '发来消息',
+    };
+    return '$when · $what';
+  }
+}
+
+/// 未读条数：只数「收到方向、且时间晚于已读水位」的消息。
+///
+/// 抽成顶层纯函数的原因——未读算错是最容易伤到用户的一种 bug
+/// （满屏红点或该红不红），必须能脱离 StorageService/平台插件直接单测。
+/// 边界取严格大于：水位等于该条时间戳时视为已读，避免"刚点开又亮回去"。
+int countIncomingUnread(List<ChatMessage> msgs, int lastReadMs) {
+  var n = 0;
+  for (final m in msgs) {
+    if (m.outgoing) continue;
+    if (m.time.millisecondsSinceEpoch > lastReadMs) n++;
+  }
+  return n;
+}
+
+/// 最后一条"收到的"消息，用于列表副标题预览。
+/// 会话按时间追加，正向扫一遍取最后一条即可（不依赖排序假设里的"末尾"）。
+ChatMessage? lastIncomingMessage(List<ChatMessage> msgs) {
+  ChatMessage? last;
+  for (final m in msgs) {
+    if (!m.outgoing) last = m;
+  }
+  return last;
 }
 
 /// 应用全局状态与业务编排中心。
@@ -52,6 +167,11 @@ class AppState extends ChangeNotifier {
   final Map<String, String> _peerNames = {};
   final Map<String, DeviceType> _peerTypes = {};
 
+  /// 对端角色与 IP 缓存：设备离线后列表仍要显示它的用途角标和 IP 尾段，
+  /// 而 _online 只保留当前在线设备，所以这两个必须像名字一样单独缓存
+  final Map<String, DeviceRole> _peerRoles = {};
+  final Map<String, String> _peerHosts = {};
+
   /// 传输任务：taskId -> task
   final Map<String, TransferTask> transfers = {};
   final Map<String, Map<String, dynamic>> _incomingPrintJobs = {};
@@ -61,6 +181,14 @@ class AppState extends ChangeNotifier {
 
   /// 多选群发选中的设备 id
   final Set<String> selected = {};
+
+  /// 会话页当前是否打开着（由聊天视图 initState/dispose 维护）。
+  /// 与 [windowVisible] 一起决定"收到消息是否顺手标记已读"。
+  bool chatPageOpen = false;
+
+  /// 窗口是否可见（最小化/隐藏到托盘时为 false，由 WindowListener 维护）。
+  /// 默认 true：桌面端启动即可见，移动端恒为 true（不做窗口概念）。
+  bool windowVisible = true;
 
   /// UI 提示回调（弹窗/SnackBar）
   void Function(String message)? onNotice;
@@ -88,6 +216,10 @@ class AppState extends ChangeNotifier {
         _peerNames[peer] = last.outgoing ? (_peerNames[peer] ?? '设备') : last.fromName;
       }
     }
+    // 从旧版本升级：老配置没有已读水位，不补基线的话一启动就满屏 99+
+    final noBaseline =
+        _messages.keys.where((id) => !settings.peerLastRead.containsKey(id)).toList();
+    if (noBaseline.isNotEmpty) _seedUnreadBaseline(noBaseline);
     if (identity != null && settings.autoOnline) {
       await goOnline();
     }
@@ -237,6 +369,13 @@ class AppState extends ChangeNotifier {
     _messages.remove(peerId);
     _peerNames.remove(peerId);
     _peerTypes.remove(peerId);
+    _peerRoles.remove(peerId);
+    _peerHosts.remove(peerId);
+    // 备注名与已读水位一并清除：残留会让以后同 id 设备的未读数算错
+    settings.peerAlias.remove(peerId);
+    settings.peerLastRead.remove(peerId);
+    _invalidateUnread(peerId);
+    await storage.saveSettings(settings);
     if (activePeerId == peerId) activePeerId = null;
     selected.remove(peerId);
     notifyListeners();
@@ -248,33 +387,89 @@ class AppState extends ChangeNotifier {
     _online
       ..clear()
       ..addEntries(devices.map((d) => MapEntry(d.deviceId, d)));
+    final fresh = <String>[];
     for (final d in devices) {
       _peerNames[d.deviceId] = d.name;
       _peerTypes[d.deviceId] = d.type;
+      if (d.role != DeviceRole.unset) _peerRoles[d.deviceId] = d.role;
+      if (d.host.isNotEmpty) _peerHosts[d.deviceId] = d.host;
+      if (!settings.peerLastRead.containsKey(d.deviceId)) fresh.add(d.deviceId);
     }
+    // 首次见到的设备先打「已读基线」：不加这一步，历史会话里的旧消息
+    // 会被整堆算成未读，一上线就是几台机器各 99+，功能直接变成噪音
+    if (fresh.isNotEmpty) _seedUnreadBaseline(fresh);
     // 清理不再在线的多选项
     selected.removeWhere((id) => !_online.containsKey(id));
     notifyListeners();
   }
 
-  /// 设备列表视图：在线设备在前，历史离线设备在后
+  /// 给一批设备设未读基线为"现在"，并落盘
+  Future<void> _seedUnreadBaseline(List<String> ids) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final id in ids) {
+      settings.peerLastRead[id] = now;
+    }
+    _invalidateUnread();
+    await storage.saveSettings(settings);
+  }
+
+  /// 设备列表视图：在线在前，其次有未读的在前，最后按展示名
   List<PeerView> get peers {
+    final now = DateTime.now();
     final map = <String, PeerView>{};
     for (final d in _online.values) {
-      map[d.deviceId] =
-          PeerView(d.deviceId, d.name, d.type, d.online, d.unreachable);
+      map[d.deviceId] = _buildPeerView(d.deviceId, d.name, d.type, d.online,
+          role: d.role,
+          unreachable: d.unreachable,
+          host: d.host,
+          now: now);
     }
     for (final id in {..._messages.keys, ..._peerNames.keys}) {
       if (map.containsKey(id)) continue;
-      map[id] = PeerView(id, _peerNames[id] ?? '设备',
-          _peerTypes[id] ?? DeviceType.other, false);
+      map[id] = _buildPeerView(
+        id,
+        _peerNames[id] ?? '设备',
+        _peerTypes[id] ?? DeviceType.other,
+        false,
+        role: _peerRoles[id] ?? DeviceRole.unset,
+        host: _peerHosts[id],
+        now: now,
+      );
     }
     final list = map.values.toList();
     list.sort((a, b) {
       if (a.online != b.online) return a.online ? -1 : 1;
-      return a.name.compareTo(b.name);
+      // 有未读的排前面：设备一多，"谁找过我"比字母顺序重要得多
+      if ((a.unread > 0) != (b.unread > 0)) return a.unread > 0 ? -1 : 1;
+      return a.displayName.compareTo(b.displayName);
     });
     return list;
+  }
+
+  /// 组装单个视图：把未读数与最近一条收到的消息从会话表里算出来
+  PeerView _buildPeerView(
+    String id,
+    String name,
+    DeviceType type,
+    bool online, {
+    DeviceRole role = DeviceRole.unset,
+    bool unreachable = false,
+    String? host,
+    required DateTime now,
+  }) {
+    final msgs = _messages[id] ?? const <ChatMessage>[];
+    return PeerView(
+      id: id,
+      name: name,
+      type: type,
+      online: online,
+      role: role,
+      unreachable: unreachable,
+      host: host,
+      alias: settings.peerAlias[id] ?? '',
+      unread: unreadOf(id),
+      lastIncoming: lastIncomingMessage(msgs),
+    );
   }
 
   RemoteDevice? deviceById(String id) => _online[id];
@@ -306,7 +501,83 @@ class AppState extends ChangeNotifier {
 
   void selectPeer(String id) {
     activePeerId = id;
+    // 打开会话即视为读完：把水位推到当前，红点随之消失
+    markPeerRead(id);
     notifyListeners();
+  }
+
+  // ---------------- 未读与设备识别 ----------------
+
+  /// 全部未读条数（任务栏闪烁、窗口标题计数都看这个）
+  int get totalUnread {
+    var n = 0;
+    for (final id in {..._messages.keys, ..._peerNames.keys}) {
+      n += unreadOf(id);
+    }
+    return n;
+  }
+
+  /// 某台设备的未读条数：只数「收到方向且晚于已读水位」的消息。
+  ///
+  /// 刻意从最终消息列表算，而不是收到一条就 +1——重发/对端重传会走
+  /// 同 id 覆盖，增量计数会把一条算成两条。
+  ///
+  /// 结果按设备记忆化：设备列表和 [totalUnread] 会在每次 notifyListeners
+  /// 时重算，而传输进度每 100ms 就刷新一次，不缓存等于每 100ms 全量扫
+  /// 一遍历史消息——那正是前面几个版本在治的界面卡顿来源。
+  int unreadOf(String peerId) => _unreadMemo.putIfAbsent(
+      peerId,
+      () => countIncomingUnread(_messages[peerId] ?? const [],
+          settings.peerLastRead[peerId] ?? 0));
+
+  /// 未读缓存：任何影响消息集合或已读水位的操作都必须失效对应项
+  final Map<String, int> _unreadMemo = {};
+
+  void _invalidateUnread([String? peerId]) {
+    if (peerId == null) {
+      _unreadMemo.clear();
+    } else {
+      _unreadMemo.remove(peerId);
+    }
+  }
+
+  /// 把某台设备的已读水位推到当前并落盘
+  void markPeerRead(String peerId) {
+    settings.peerLastRead[peerId] = DateTime.now().millisecondsSinceEpoch;
+    _invalidateUnread(peerId); // 水位变了，缓存的未读数必须重算，否则红点不消
+    storage.saveSettings(settings);
+  }
+
+  /// 窗口重新回到前台时调用：正开着的那个会话视为已读。
+  /// 没有这一步，用户最小化期间攒下的未读，回来后即便一直盯着看也不会消。
+  void syncActiveRead() {
+    final id = activePeerId;
+    if (id == null || !chatPageOpen || !windowVisible) return;
+    if (unreadOf(id) == 0) return; // 没有未读就别白写一次磁盘
+    markPeerRead(id);
+    notifyListeners();
+  }
+
+  /// 设置本机备注名（空串=清除）。只写本地设置，绝不回写对方设备。
+  Future<void> setPeerAlias(String peerId, String alias) async {
+    final v = alias.trim();
+    if (v.isEmpty) {
+      settings.peerAlias.remove(peerId);
+    } else {
+      settings.peerAlias[peerId] = v;
+    }
+    await storage.saveSettings(settings);
+    notifyListeners();
+  }
+
+  /// 修改本机设备角色（用途标签），落盘后立即重发广播让同组设备更新角标
+  Future<void> setDeviceRole(DeviceRole role) async {
+    final id = identity;
+    if (id == null) return;
+    identity = id.copyWith(deviceRole: role);
+    await storage.saveIdentity(identity!);
+    notifyListeners();
+    if (online) _transport.reannounce();
   }
 
   void toggleSelect(String id) {
@@ -341,6 +612,18 @@ class AppState extends ChangeNotifier {
     } else {
       list.add(m);
     }
+    // 消息集合变了，未读缓存必须失效（markPeerRead 分支自带失效，
+    // 这里兜住"没走那条分支"的绝大多数情况）
+    _invalidateUnread(m.peerId);
+    // 收到的消息：仅当"这个会话正开着、且窗口确实可见"时顺手标记已读。
+    // 必须带上可见性判断——最小化到托盘时若也算已读，未读数永远不增长，
+    // 任务栏闪烁就再也不会触发，等于把最需要的场景漏掉了。
+    if (!m.outgoing &&
+        m.peerId == activePeerId &&
+        chatPageOpen &&
+        windowVisible) {
+      markPeerRead(m.peerId);
+    }
     await storage.appendHistory(m);
     notifyListeners();
   }
@@ -350,6 +633,7 @@ class AppState extends ChangeNotifier {
     if (list == null) return;
     final i = list.indexWhere((e) => e.id == m.id);
     if (i >= 0) list[i] = m;
+    _invalidateUnread(m.peerId);
     // 追加覆盖行（读取时按 id 去重取最新），
     // 不再全量重写历史文件——旧方案随记录增长越来越卡
     await storage.appendHistory(m);
@@ -877,6 +1161,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> clearConversation(String peerId) async {
     _messages.remove(peerId);
+    _invalidateUnread(peerId); // 消息清空后红点必须跟着消失
     await storage.clearHistory(peerId);
     notifyListeners();
   }

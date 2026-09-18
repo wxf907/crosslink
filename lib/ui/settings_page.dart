@@ -16,6 +16,7 @@ import 'hotkey_settings_page.dart';
 import 'logs_page.dart';
 import 'print_service_page.dart';
 import 'qr_pages.dart';
+import 'widgets/device_avatar.dart';
 
 /// 设置页（左下角二级菜单）：设备名、保存路径、通知、扫码授权、日志、账号。
 class SettingsPage extends StatelessWidget {
@@ -51,6 +52,17 @@ class SettingsPage extends StatelessWidget {
             subtitle: Text(app.identity?.deviceName ?? ''),
             trailing: const Icon(Icons.edit, size: 18),
             onTap: () => _editDeviceName(context, app),
+          ),
+          ListTile(
+            leading: const Icon(Icons.category_outlined),
+            title: const Text('本机设备角色'),
+            subtitle: Text(
+              '${(app.identity?.deviceRole ?? DeviceRole.unset).label} · 让其它设备的列表角标一眼认出它',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: const Icon(Icons.edit, size: 18),
+            onTap: () => _pickDeviceRole(context, app),
           ),
           SwitchListTile(
             secondary: const Icon(Icons.wifi_tethering),
@@ -249,7 +261,7 @@ class SettingsPage extends StatelessWidget {
           const Center(
             child: Padding(
               padding: EdgeInsets.all(12),
-              child: Text('CrossLink v2.6.3',
+              child: Text('CrossLink v2.7.0',
                   style: TextStyle(color: Colors.black38, fontSize: 12)),
             ),
           ),
@@ -282,6 +294,58 @@ class SettingsPage extends StatelessWidget {
     if (name != null && name.trim().isNotEmpty) {
       await app.setDeviceName(name);
     }
+  }
+
+  /// 选择本机设备角色。候选顺序按系统类型排：
+  /// 电脑不会需要"手机"，手机不会需要"常开主机"，把贴合的放前面少滚动。
+  Future<void> _pickDeviceRole(BuildContext context, AppState app) async {
+    final type = app.identity?.deviceType ?? DeviceType.other;
+    final primary = switch (type) {
+      DeviceType.windows => [
+          DeviceRole.office,
+          DeviceRole.host,
+          DeviceRole.laptop,
+          DeviceRole.shared,
+        ],
+      DeviceType.android => [
+          DeviceRole.phone,
+          DeviceRole.tablet,
+          DeviceRole.shared,
+        ],
+      DeviceType.other => [
+          DeviceRole.office,
+          DeviceRole.phone,
+          DeviceRole.shared,
+        ],
+    };
+    final choices = <DeviceRole>[
+      ...primary,
+      ...DeviceRole.values.where((r) => !primary.contains(r)),
+    ];
+    final picked = await showDialog<DeviceRole>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('选择设备角色'),
+        children: [
+          for (final r in choices)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, r),
+              child: Row(
+                children: [
+                  Icon(DeviceAvatar.roleIcon(r, type),
+                      size: 20,
+                      color: r == DeviceRole.unset
+                          ? Colors.black26
+                          : Theme.of(ctx).colorScheme.primary),
+                  const SizedBox(width: 12),
+                  Text(r == DeviceRole.unset ? '未设置（按系统类型显示）' : r.label),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (picked != null) await app.setDeviceRole(picked);
   }
 
   String _closeBehaviorLabel(AppState app) =>

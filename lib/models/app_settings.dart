@@ -52,6 +52,16 @@ class AppSettings {
   /// 每日打印页数配额（按任务份数×页数累计，防滥用）
   int printDailyPages;
 
+  /// 本地备注名：peerId -> 我给这台设备起的名。
+  /// 只存本机、不回写对方——对方设备名仍由它自己决定，
+  /// 避免"我想叫它财务机，它自己叫 gjw"这种没法调和的情况。
+  Map<String, String> peerAlias;
+
+  /// 上次读取时刻：peerId -> 毫秒时间戳。
+  /// 未读数 = 该会话中「收到方向且时间晚于该值」的消息条数。
+  /// 必须持久化，否则重启应用未读就清零，等于白做。
+  Map<String, int> peerLastRead;
+
   AppSettings({
     this.saveDir,
     this.notifyOnReceive = true,
@@ -69,7 +79,10 @@ class AppSettings {
     this.printToken = '',
     this.printPrinter = '',
     this.printDailyPages = 200,
-  });
+    Map<String, String>? peerAlias,
+    Map<String, int>? peerLastRead,
+  })  : peerAlias = peerAlias ?? <String, String>{},
+        peerLastRead = peerLastRead ?? <String, int>{};
 
   Map<String, dynamic> toJson() => {
         'saveDir': saveDir,
@@ -88,6 +101,8 @@ class AppSettings {
         'printToken': printToken,
         'printPrinter': printPrinter,
         'printDailyPages': printDailyPages,
+        'peerAlias': peerAlias,
+        'peerLastRead': peerLastRead,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -107,5 +122,15 @@ class AppSettings {
         printToken: j['printToken'] as String? ?? '',
         printPrinter: j['printPrinter'] as String? ?? '',
         printDailyPages: j['printDailyPages'] as int? ?? 200,
+        // 老版本配置文件里没有这两个键 → 空表；JSON 解出来是
+        // Map<String,dynamic>，必须逐项转成强类型，否则后续赋值即崩
+        peerAlias: (j['peerAlias'] as Map?)?.map(
+              (k, v) => MapEntry('$k', '$v'),
+            ) ??
+            <String, String>{},
+        peerLastRead: (j['peerLastRead'] as Map?)?.map(
+              (k, v) => MapEntry('$k', (v is int) ? v : int.tryParse('$v') ?? 0),
+            ) ??
+            <String, int>{},
       );
 }

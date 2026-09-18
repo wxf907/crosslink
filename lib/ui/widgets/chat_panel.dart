@@ -151,6 +151,22 @@ class _ChatPanelState extends State<ChatPanel> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    // 面板开着 = 当前 activePeerId 的会话正被看着。
+    // _addMessage 据此决定收到的消息要不要顺手算已读。
+    context.read<AppState>().chatPageOpen = true;
+  }
+
+  @override
+  void dispose() {
+    // 必须置回 false：否则移动端退出会话后，新消息仍会被误判为已读
+    context.read<AppState>().chatPageOpen = false;
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final peerId = app.activePeerId;

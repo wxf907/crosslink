@@ -119,6 +119,14 @@ class LanTransport implements MessageTransport {
     log.i('LAN', '传输已停止');
   }
 
+  /// 本机展示信息（设备角色/名称）变更后立即重发一次广播，
+  /// 让同组设备不必等下一个 3 秒周期就能看到新角标。
+  /// 刻意不复用 [refresh]——后者会顺带触发持久连接重连，语义更重。
+  void reannounce() {
+    if (_me == null) return;
+    _announce();
+  }
+
   @override
   void refresh() {
     _computeBroadcastTargets();
@@ -252,6 +260,9 @@ class LanTransport implements MessageTransport {
         'did': me.deviceId,
         'name': me.deviceName,
         'dtype': me.deviceType.name,
+        // 用途角色（办公机/常开主机/手机…），仅用于列表识别；
+        // 旧版本对端不读此键，多带一个字段完全向后兼容
+        'role': me.deviceRole.name,
         'tcp': _tcpPort,
       };
 
@@ -391,6 +402,7 @@ class LanTransport implements MessageTransport {
           deviceId: did,
           name: msg['name'] as String? ?? '设备',
           type: DeviceType.fromString(msg['dtype'] as String?),
+          role: DeviceRole.fromString(msg['role'] as String?),
           host: host,
           tcpPort: tcpPort,
           lastSeen: now,
@@ -416,6 +428,11 @@ class LanTransport implements MessageTransport {
         _emitDevices();
       } else {
         existing.name = msg['name'] as String? ?? existing.name;
+        // 角色可能被对方改了（在它的设置里换用途标签），跟着刷新
+        final role = DeviceRole.fromString(msg['role'] as String?);
+        if (role != DeviceRole.unset || existing.role == DeviceRole.unset) {
+          existing.role = role;
+        }
         final addrChanged =
             existing.host != host || existing.tcpPort != tcpPort;
         existing.host = host;
@@ -907,6 +924,13 @@ class LanTransport implements MessageTransport {
         if (did.isEmpty) return;
         final persist = (frame.header['p'] as bool?) ?? false;
         final dev = _devices[did];
+        final helloRole =
+            DeviceRole.fromString(frame.header['role'] as String?);
+        // 角色回填必须在 persist 早返回之前：持久长连接是最常见路径，
+        // 放在后面会让绝大多数设备永远拿不到角色
+        if (dev != null && helloRole != DeviceRole.unset) {
+          dev.role = helloRole;
+        }
         if (persist && dev != null && dev.version >= AppConst.protocolVersion) {
           _acceptInbound(did, socket, setConn, setPeer);
           return;
@@ -917,6 +941,7 @@ class LanTransport implements MessageTransport {
               deviceId: did,
               name: frame.header['name'] as String? ?? '设备',
               type: DeviceType.fromString(frame.header['dtype'] as String?),
+              role: helloRole,
               host: socket.remoteAddress.address,
               tcpPort: (frame.header['tcp'] as int?) ?? 0,
               lastSeen: DateTime.now(),
@@ -1096,6 +1121,8 @@ class LanTransport implements MessageTransport {
       'did': me.deviceId,
       'name': me.deviceName,
       'dtype': me.deviceType.name,
+      // 与 UDP 广播同义：跨网段/手动直连收不到广播时，靠 hello 拿到角色
+      'role': me.deviceRole.name,
       'tcp': _tcpPort,
     });
   }

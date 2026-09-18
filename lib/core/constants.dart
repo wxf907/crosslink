@@ -86,5 +86,49 @@ enum DeviceType {
   }
 }
 
+/// 设备角色：这台机器「是干什么用的」。
+///
+/// 与 [DeviceType] 的分工——type 表示什么系统（Windows/安卓），
+/// role 表示用途（办公机/常开主机/手机…）。一个人往往有多台同系统设备，
+/// 只按 type 显示图标时它们长得一模一样，只能靠读名字区分；
+/// 因此由本机在「设置」里选定角色，随 UDP announce 与 TCP hello 广播给
+/// 同组设备，列表据此显示不同角标图标。
+///
+/// 兼容性：旧版本对端不带该字段，[fromString] 回退 [DeviceRole.unset]，
+/// 界面自动退回按 [DeviceType] 选图标，不影响任何既有功能。
+enum DeviceRole {
+  unset,
+  office,
+  host,
+  laptop,
+  phone,
+  tablet,
+  shared;
+
+  String get label {
+    switch (this) {
+      case DeviceRole.unset:
+        return '未设置';
+      case DeviceRole.office:
+        return '办公机';
+      case DeviceRole.host:
+        return '常开主机';
+      case DeviceRole.laptop:
+        return '笔记本';
+      case DeviceRole.phone:
+        return '手机';
+      case DeviceRole.tablet:
+        return '平板';
+      case DeviceRole.shared:
+        return '公用机';
+    }
+  }
+
+  static DeviceRole fromString(String? v) => DeviceRole.values.firstWhere(
+        (r) => r.name == v,
+        orElse: () => DeviceRole.unset,
+      );
+}
+
 /// 消息类型
 enum MessageKind { text, image, file, system }

@@ -3,11 +3,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/constants.dart';
 import '../../state/app_state.dart';
 import '../contact_author.dart';
 import '../print_service_page.dart';
 import '../settings_page.dart';
+import 'device_avatar.dart';
 import 'manual_connect.dart';
 
 class DeviceSidebar extends StatelessWidget {
@@ -35,6 +35,118 @@ class DeviceSidebar extends StatelessWidget {
     );
     if (confirmed == true) {
       await app.deletePeer(peerId);
+    }
+  }
+
+  /// 副标题：`IP尾段 · 最近动态 [· 状态]`。
+  ///
+  /// 在线状态已由头像外圈描边表达，在线时不再重复写"在线"，
+  /// 把这一行留给真正有用的"谁在什么时候给我发了什么"；
+  /// 只有异常态（连不上/离线）才补状态词。什么信息都没有时回退类型名。
+  static String _subtitle(PeerView p) {
+    final now = DateTime.now();
+    final activity = p.activityLabel(now);
+    final parts = <String>[
+      if (p.ipTail.isNotEmpty) p.ipTail,
+      if (activity.isNotEmpty) activity,
+      if (!p.online) (p.unreachable ? '连接不稳定' : '离线'),
+    ];
+    if (parts.isEmpty) return p.type.label;
+    return parts.join(' · ');
+  }
+
+  /// 设备菜单项：图标 + 文字的紧凑排布
+  static PopupMenuItem<String> _menuItem(
+      String value, IconData icon, String text) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: Colors.black54),
+          const SizedBox(width: 10),
+          Flexible(
+              child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        ],
+      ),
+    );
+  }
+
+  /// 设备菜单：长按（移动端）与右键（桌面端）共用。
+  Future<void> _showPeerMenu(
+      BuildContext context, AppState app, PeerView p) async {
+    final box = context.findRenderObject();
+    RelativeRect anchor = RelativeRect.fill;
+    if (box is RenderBox) {
+      final off = box.localToGlobal(Offset.zero);
+      final mid = off.dy + box.size.height / 2;
+      anchor = RelativeRect.fromLTRB(off.dx, mid, off.dx + box.size.width, mid);
+    }
+    final choice = await showMenu<String>(
+      context: context,
+      position: anchor,
+      items: [
+        _menuItem('alias', Icons.edit_note,
+            p.alias.isEmpty ? '设置备注名' : '修改备注名（当前：${p.alias}）'),
+        if (p.alias.isNotEmpty)
+          _menuItem('clear', Icons.clear, '清除备注名'),
+        if (!p.online) _menuItem('delete', Icons.delete_outline, '删除设备'),
+      ],
+    );
+    if (!context.mounted || choice == null) return;
+    switch (choice) {
+      case 'alias':
+        await _editAlias(context, app, p);
+      case 'clear':
+        await app.setPeerAlias(p.id, '');
+      case 'delete':
+        await _confirmDeletePeer(context, app, p.id, p.displayName);
+    }
+  }
+
+  /// 备注名输入框：只存本机，不影响对方那台机器的自报名。
+  Future<void> _editAlias(
+      BuildContext context, AppState app, PeerView p) async {
+    final controller = TextEditingController(text: p.alias);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('设置备注名'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('对方自报名：${p.name}'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLength: 20,
+              decoration: const InputDecoration(
+                hintText: '例如：财务小王的机器 / 会议室主机',
+                counterText: '',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              '备注名只在你这台机器上显示，不会改动对方的设备名。',
+              style: TextStyle(fontSize: 11, color: Colors.black45),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (saved == true) {
+      await app.setPeerAlias(p.id, controller.text);
     }
   }
 
@@ -91,9 +203,22 @@ class DeviceSidebar extends StatelessWidget {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            child: Text('我的设备（在线 $onlineCount）',
-                style: const TextStyle(
-                    fontSize: 12, color: Colors.black54)),
+            child: Text.rich(
+              TextSpan(
+                text: '我的设备（在线 $onlineCount',
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                children: [
+                  if (app.totalUnread > 0)
+                    TextSpan(
+                      text: ' · 未读 ${app.totalUnread}',
+                      style: const TextStyle(
+                          color: Color(0xFFE5484D),
+                          fontWeight: FontWeight.w600),
+                    ),
+                  const TextSpan(text: '）'),
+                ],
+              ),
+            ),
           ),
           // 设备列表
           Expanded(
@@ -112,70 +237,48 @@ class DeviceSidebar extends StatelessWidget {
                       final p = peers[i];
                       final selected = app.selected.contains(p.id);
                       final active = app.activePeerId == p.id;
-                      return Container(
-                        color: active ? const Color(0xFFDCEEFB) : null,
-                        child: ListTile(
-                          dense: true,
-                          leading: Stack(
-                            children: [
-                              CircleAvatar(
-                                radius: 18,
-                                backgroundColor: Colors.white,
-                                child: Icon(
-                                  p.type == DeviceType.android
-                                      ? Icons.smartphone
-                                      : Icons.computer,
-                                  color: Colors.black54,
-                                ),
-                              ),
-                              Positioned(
-                                right: 0,
-                                bottom: 0,
-                                child: Container(
-                                  width: 10,
-                                  height: 10,
-                                  decoration: BoxDecoration(
-                                    color: p.online
-                                        ? Colors.green
-                                        : (p.unreachable
-                                            ? Colors.orange
-                                            : Colors.grey),
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                        color: Colors.white, width: 1.5),
-                                  ),
-                                ),
-                              ),
-                            ],
+                      // Builder 让 context 指向这一行本身，
+                      // 菜单才能锚定到被点击的那一行（外层 context 会跑到列表左上角）
+                      return Builder(builder: (rowContext) {
+                        return Container(
+                          color: active ? const Color(0xFFDCEEFB) : null,
+                          // ListTile 没有 onSecondaryTap，用一层 translucent 的
+                          // GestureDetector 承接桌面右键，不影响它自身的点击与长按
+                          child: GestureDetector(
+                            onSecondaryTap: () =>
+                                _showPeerMenu(rowContext, app, p),
+                            behavior: HitTestBehavior.translucent,
+                            child: ListTile(
+                              dense: true,
+                              leading: DeviceAvatar(peer: p),
+                              title: Text(p.displayName,
+                                  maxLines: 1, overflow: TextOverflow.ellipsis),
+                              subtitle: Text(_subtitle(p),
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: p.unreachable
+                                          ? Colors.orange.shade800
+                                          : null)),
+                              trailing: p.online
+                                  ? Checkbox(
+                                      value: selected,
+                                      onChanged: (_) => app.toggleSelect(p.id),
+                                    )
+                                  : (p.unreachable
+                                      ? const Icon(Icons.portable_wifi_off,
+                                          size: 18, color: Colors.orange)
+                                      : null),
+                              onTap: () {
+                                app.selectPeer(p.id);
+                                onOpenPeer?.call(p.id);
+                              },
+                              // 长按（移动端）与右键（桌面端）走同一个设备菜单
+                              onLongPress: () =>
+                                  _showPeerMenu(rowContext, app, p),
+                            ),
                           ),
-                          title: Text(p.name,
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text(
-                              '${p.type.label} · '
-                              '${p.online ? "在线" : (p.unreachable ? "连接不稳定" : "离线")}',
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color: p.unreachable
-                                      ? Colors.orange.shade800
-                                      : null)),
-                          trailing: p.online
-                              ? Checkbox(
-                                  value: selected,
-                                  onChanged: (_) => app.toggleSelect(p.id),
-                                )
-                              : (p.unreachable
-                                  ? const Icon(Icons.portable_wifi_off,
-                                      size: 18, color: Colors.orange)
-                                  : null),
-                          onTap: () {
-                            app.selectPeer(p.id);
-                            onOpenPeer?.call(p.id);
-                          },
-                          onLongPress: !p.online
-                              ? () => _confirmDeletePeer(context, app, p.id, p.name)
-                              : null,
-                        ),
-                      );
+                        );
+                      });
                     },
                   ),
           ),
